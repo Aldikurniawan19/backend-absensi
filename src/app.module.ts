@@ -19,6 +19,7 @@ import { LaporanModule } from './modules/laporan/laporan.module';
 import { MasterModule } from './modules/master/master.module';
 import { SesiModule } from './modules/sesi/sesi.module';
 import { UsersModule } from './modules/users/users.module';
+import { AppController } from './app.controller';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { UsersModule } from './modules/users/users.module';
     IzinModule,
     LaporanModule,
   ],
+  controllers: [AppController],
   providers: [
     {
       provide: APP_GUARD,
