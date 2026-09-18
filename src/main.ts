@@ -9,10 +9,14 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const logger = new Logger('Bootstrap');
 
-  // Pastikan folder upload tersedia
-  const uploadDir = path.join(process.cwd(), 'uploads', 'izin');
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+  // Pastikan folder upload tersedia jika filesystem writable
+  try {
+    const uploadDir = path.join(process.cwd(), 'uploads', 'izin');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+  } catch {
+    // Diabaikan pada environment serverless/readonly
   }
 
   // Global Validation Pipe
