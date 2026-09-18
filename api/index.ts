@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module';
 import { ExpressAdapter } from '@nestjs/platform-express';
@@ -6,10 +7,10 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 const server: Express = express();
-let isInitialized = false;
+let isAppInitialized = false;
 
 async function bootstrap() {
-  if (!isInitialized) {
+  if (!isAppInitialized) {
     const app = await NestFactory.create(AppModule, new ExpressAdapter(server));
 
     app.useGlobalPipes(
@@ -63,11 +64,21 @@ async function bootstrap() {
     });
 
     await app.init();
-    isInitialized = true;
+    isAppInitialized = true;
   }
 }
 
 export default async function handler(req: Request, res: Response) {
-  await bootstrap();
-  server(req, res);
+  try {
+    await bootstrap();
+    server(req, res);
+  } catch (error: any) {
+    console.error('Serverless bootstrap error:', error);
+    res.status(500).json({
+      statusCode: 500,
+      message: 'Internal Server Error during Lambda execution',
+      error: error?.message || String(error),
+      stack: process.env.NODE_ENV !== 'production' ? error?.stack : undefined,
+    });
+  }
 }
