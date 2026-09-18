@@ -1,0 +1,382 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  SISWA
+  GURU
+  ADMIN
+}
+
+enum TahunAjaranStatus {
+  DRAFT
+  AKTIF
+  NONAKTIF
+}
+
+enum SesiAbsensiStatus {
+  BERLANGSUNG
+  SELESAI
+  DIBATALKAN
+}
+
+enum AbsensiStatus {
+  HADIR
+  TERLAMBAT
+  ALPA
+  IZIN
+  SAKIT
+}
+
+enum AbsensiSumber {
+  SCAN_QR
+  MANUAL
+}
+
+enum IzinJenis {
+  IZIN
+  SAKIT
+}
+
+enum IzinStatus {
+  PENDING
+  DISETUJUI
+  DITOLAK
+}
+
+enum SesiLoginStatus {
+  AKTIF
+  LOGOUT
+  EXPIRED
+}
+
+model Sekolah {
+  id                    String            @id @default(uuid())
+  nama                  String
+  npsn                  String            @unique
+  alamat                String?
+  wajib_gps             Boolean           @default(false)
+  lat_sekolah           Decimal?          @db.Decimal(10, 7)
+  lng_sekolah           Decimal?          @db.Decimal(10, 7)
+  radius_meter          Int               @default(100)
+  maks_sesi_aktif_siswa Int               @default(1)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  tahun_ajaran          TahunAjaran[]
+  jurusan               Jurusan[]
+  kelas                 Kelas[]
+  siswa                 Siswa[]
+  guru                  Guru[]
+  admin                 Admin[]
+  mata_pelajaran        MataPelajaran[]
+  audit_logs            AuditLog[]
+
+  @@map("sekolah")
+}
+
+model TahunAjaran {
+  id                    String                 @id @default(uuid())
+  sekolah_id            String
+  nama                  String                 // e.g. "2024/2025"
+  semester              String                 // e.g. "Ganjil", "Genap"
+  tanggal_mulai         DateTime               @db.Date
+  tanggal_selesai       DateTime               @db.Date
+  status                TahunAjaranStatus      @default(DRAFT)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  sekolah               Sekolah                @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+  jadwal_pelajaran      JadwalPelajaran[]
+  riwayat_kelas_siswa   RiwayatKelasSiswa[]
+  penugasan_wali_kelas  PenugasanWaliKelas[]
+
+  @@index([sekolah_id, status])
+  @@map("tahun_ajaran")
+}
+
+model Jurusan {
+  id          String    @id @default(uuid())
+  sekolah_id  String
+  nama        String    // e.g. "MIPA", "IPS", "Bahasa"
+  kode        String    // e.g. "MIPA"
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  sekolah     Sekolah   @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+  kelas       Kelas[]
+
+  @@unique([sekolah_id, kode])
+  @@map("jurusan")
+}
+
+model Kelas {
+  id                    String                 @id @default(uuid())
+  sekolah_id            String
+  jurusan_id            String
+  tingkat               Int                    // 10, 11, 12
+  nama_rombel           String                 // "1", "2" -> "10 MIPA 1"
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  sekolah               Sekolah                @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+  jurusan               Jurusan                @relation(fields: [jurusan_id], references: [id], onDelete: Restrict)
+  jadwal_pelajaran      JadwalPelajaran[]
+  riwayat_kelas_siswa   RiwayatKelasSiswa[]
+  penugasan_wali_kelas  PenugasanWaliKelas[]
+
+  @@unique([sekolah_id, tingkat, jurusan_id, nama_rombel])
+  @@index([sekolah_id, tingkat])
+  @@map("kelas")
+}
+
+model Siswa {
+  id                    String              @id @default(uuid())
+  sekolah_id            String
+  nama                  String
+  nisn                  String              @unique
+  email                 String              @unique
+  password              String
+  no_hp_ortu           String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  sekolah               Sekolah             @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+  riwayat_kelas         RiwayatKelasSiswa[]
+  sesi_login            SesiLogin[]
+  absensi               Absensi[]
+  pengajuan_izin        PengajuanIzin[]
+
+  @@index([sekolah_id, nisn])
+  @@map("siswa")
+}
+
+model RiwayatKelasSiswa {
+  id               String       @id @default(uuid())
+  siswa_id         String
+  kelas_id         String
+  tahun_ajaran_id  String
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  siswa            Siswa        @relation(fields: [siswa_id], references: [id], onDelete: Cascade)
+  kelas            Kelas        @relation(fields: [kelas_id], references: [id], onDelete: Restrict)
+  tahun_ajaran     TahunAjaran  @relation(fields: [tahun_ajaran_id], references: [id], onDelete: Cascade)
+
+  @@unique([siswa_id, tahun_ajaran_id])
+  @@index([kelas_id, tahun_ajaran_id])
+  @@map("riwayat_kelas_siswa")
+}
+
+model Guru {
+  id                    String                @id @default(uuid())
+  sekolah_id            String
+  nama                  String
+  nip                   String                @unique
+  email                 String                @unique
+  password              String
+  no_hp                 String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  sekolah               Sekolah               @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+  sesi_login            SesiLogin[]
+  jadwal_pelajaran      JadwalPelajaran[]
+  guru_mapel            GuruMapel[]
+  penugasan_wali_kelas  PenugasanWaliKelas[]
+
+  @@index([sekolah_id, nip])
+  @@map("guru")
+}
+
+model Admin {
+  id          String       @id @default(uuid())
+  sekolah_id  String
+  nama        String
+  email       String       @unique
+  password    String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  sekolah     Sekolah      @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+  sesi_login  SesiLogin[]
+
+  @@index([sekolah_id, email])
+  @@map("admin")
+}
+
+model PenugasanWaliKelas {
+  id               String       @id @default(uuid())
+  guru_id          String
+  kelas_id         String
+  tahun_ajaran_id  String
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  guru             Guru         @relation(fields: [guru_id], references: [id], onDelete: Cascade)
+  kelas            Kelas        @relation(fields: [kelas_id], references: [id], onDelete: Cascade)
+  tahun_ajaran     TahunAjaran  @relation(fields: [tahun_ajaran_id], references: [id], onDelete: Cascade)
+
+  @@unique([kelas_id, tahun_ajaran_id])
+  @@index([guru_id, tahun_ajaran_id])
+  @@map("penugasan_wali_kelas")
+}
+
+model MataPelajaran {
+  id                String            @id @default(uuid())
+  sekolah_id        String
+  nama              String
+  kode              String
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  sekolah           Sekolah           @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+  jadwal_pelajaran  JadwalPelajaran[]
+  guru_mapel        GuruMapel[]
+
+  @@unique([sekolah_id, kode])
+  @@map("mata_pelajaran")
+}
+
+model GuruMapel {
+  id          String        @id @default(uuid())
+  guru_id     String
+  mapel_id    String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  guru        Guru          @relation(fields: [guru_id], references: [id], onDelete: Cascade)
+  mapel       MataPelajaran @relation(fields: [mapel_id], references: [id], onDelete: Cascade)
+
+  @@unique([guru_id, mapel_id])
+  @@map("guru_mapel")
+}
+
+model JadwalPelajaran {
+  id               String          @id @default(uuid())
+  kelas_id         String
+  guru_id          String
+  mapel_id         String
+  tahun_ajaran_id  String
+  hari             Int             // 1 = Senin, 2 = Selasa, 3 = Rabu, 4 = Kamis, 5 = Jumat, 6 = Sabtu, 7 = Minggu
+  jam_mulai        String          // Format: "HH:mm" misal "07:30"
+  jam_selesai      String          // Format: "HH:mm" misal "09:00"
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  kelas            Kelas           @relation(fields: [kelas_id], references: [id], onDelete: Cascade)
+  guru             Guru            @relation(fields: [guru_id], references: [id], onDelete: Cascade)
+  mapel            MataPelajaran   @relation(fields: [mapel_id], references: [id], onDelete: Cascade)
+  tahun_ajaran     TahunAjaran     @relation(fields: [tahun_ajaran_id], references: [id], onDelete: Cascade)
+  sesi_absensi     SesiAbsensi[]
+
+  @@index([guru_id, hari])
+  @@index([kelas_id, hari])
+  @@index([tahun_ajaran_id])
+  @@map("jadwal_pelajaran")
+}
+
+model SesiLogin {
+  id                    String          @id @default(uuid())
+  siswa_id              String?
+  guru_id               String?
+  admin_id              String?
+  device_info           String
+  token_refresh         String          // Hashed refresh token
+  waktu_login           DateTime        @default(now())
+  waktu_terakhir_aktif  DateTime        @default(now())
+  status                SesiLoginStatus @default(AKTIF)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  siswa                 Siswa?          @relation(fields: [siswa_id], references: [id], onDelete: Cascade)
+  guru                  Guru?           @relation(fields: [guru_id], references: [id], onDelete: Cascade)
+  admin                 Admin?          @relation(fields: [admin_id], references: [id], onDelete: Cascade)
+
+  @@index([siswa_id, status])
+  @@index([guru_id, status])
+  @@index([admin_id, status])
+  @@map("sesi_login")
+}
+
+model SesiAbsensi {
+  id           String            @id @default(uuid())
+  jadwal_id    String
+  token_qr     String            @unique
+  waktu_mulai  DateTime          @default(now())
+  waktu_exp    DateTime
+  status       SesiAbsensiStatus @default(BERLANGSUNG)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  jadwal       JadwalPelajaran   @relation(fields: [jadwal_id], references: [id], onDelete: Cascade)
+  absensi      Absensi[]
+
+  @@index([jadwal_id, status])
+  @@map("sesi_absensi")
+}
+
+model Absensi {
+  id          String        @id @default(uuid())
+  sesi_id     String
+  siswa_id    String
+  waktu_scan  DateTime?
+  status      AbsensiStatus
+  lokasi_lat  Decimal?      @db.Decimal(10, 7)
+  lokasi_lng  Decimal?      @db.Decimal(10, 7)
+  sumber      AbsensiSumber @default(SCAN_QR)
+  keterangan  String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  sesi        SesiAbsensi   @relation(fields: [sesi_id], references: [id], onDelete: Cascade)
+  siswa       Siswa         @relation(fields: [siswa_id], references: [id], onDelete: Cascade)
+
+  @@unique([sesi_id, siswa_id])
+  @@index([siswa_id, status])
+  @@index([sesi_id, status])
+  @@map("absensi")
+}
+
+model PengajuanIzin {
+  id                 String     @id @default(uuid())
+  siswa_id           String
+  tanggal            DateTime   @db.Date
+  jenis              IzinJenis
+  keterangan         String
+  file_bukti         String?
+  status_approval    IzinStatus @default(PENDING)
+  disetujui_oleh_id  String?
+  alasan_penolakan   String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  siswa              Siswa      @relation(fields: [siswa_id], references: [id], onDelete: Cascade)
+
+  @@index([siswa_id, tanggal])
+  @@map("pengajuan_izin")
+}
+
+model AuditLog {
+  id          String    @id @default(uuid())
+  sekolah_id  String
+  actor_id    String
+  actor_type  UserRole
+  action      String
+  resource    String
+  resource_id String?
+  details     String?   @db.Text
+  ip_address  String?
+  createdAt   DateTime  @default(now())
+
+  sekolah     Sekolah   @relation(fields: [sekolah_id], references: [id], onDelete: Cascade)
+
+  @@index([sekolah_id, actor_id])
+  @@map("audit_log")
+}

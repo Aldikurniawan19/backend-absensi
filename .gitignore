@@ -1,0 +1,45 @@
+# ==========================================
+# Backend (NestJS + Prisma) .gitignore
+# ==========================================
+
+# Node Dependencies
+/node_modules
+
+# Build & Compilation Outputs
+/dist
+/build
+
+# Environment Variables & Secrets (CRITICAL: Do NOT commit secrets)
+.env
+.env.*
+!.env.example
+!.env.test
+
+# File Uploads Storage (Local runtime files)
+/uploads
+/uploads/*
+!/uploads/.gitkeep
+
+# Prisma & Database Local Artifacts
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Logs & Debug Dumps
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test & Coverage Outputs
+/coverage
+/.nyc_output
+
+# TypeScript Cache
+*.tsbuildinfo
+
+# OS Metadata
+.DS_Store
+Thumbs.db
