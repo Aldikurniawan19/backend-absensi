@@ -26,10 +26,9 @@ async function bootstrap() {
   );
 
   app.enableCors({
-    origin:
-      !process.env.CORS_ORIGIN || process.env.CORS_ORIGIN === '*'
-        ? true
-        : process.env.CORS_ORIGIN.split(','),
+    origin: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
     credentials: true,
   });
 
