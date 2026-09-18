@@ -13,7 +13,23 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { diskStorage } from 'multer';
+import * as fs from 'fs';
 import * as path from 'path';
+
+const getUploadDir = () => {
+  const dir =
+    process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
+      ? path.join('/tmp', 'uploads', 'izin')
+      : path.join(process.cwd(), 'uploads', 'izin');
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch {
+    // Diabaikan jika filesystem readonly
+  }
+  return dir;
+};
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -34,7 +50,10 @@ export class IzinController {
   @UseInterceptors(
     FileInterceptor('file_bukti', {
       storage: diskStorage({
-        destination: './uploads/izin',
+        destination: (req, file, cb) => {
+          const uploadPath = getUploadDir();
+          cb(null, uploadPath);
+        },
         filename: (req, file, cb) => {
           const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
           const ext = path.extname(file.originalname);
