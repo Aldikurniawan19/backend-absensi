@@ -42,6 +42,7 @@ export class UsersController {
   @ApiQuery({ name: 'search', required: false })
   @ApiQuery({ name: 'kelas_id', required: false })
   @ApiQuery({ name: 'tahun_ajaran_id', required: false })
+  @ApiQuery({ name: 'tingkat', required: false })
   async getSiswaList(
     @CurrentUser() user: JwtPayload,
     @Query('page') page?: number,
@@ -49,6 +50,7 @@ export class UsersController {
     @Query('search') search?: string,
     @Query('kelas_id') kelasId?: string,
     @Query('tahun_ajaran_id') tahunAjaranId?: string,
+    @Query('tingkat') tingkat?: number,
   ) {
     const result = await this.usersService.getSiswaList(
       user.sekolah_id,
@@ -57,6 +59,7 @@ export class UsersController {
       search,
       kelasId,
       tahunAjaranId,
+      tingkat ? Number(tingkat) : undefined,
     );
     return result;
   }

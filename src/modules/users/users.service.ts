@@ -33,6 +33,7 @@ export class UsersService {
     search?: string,
     kelasId?: string,
     tahunAjaranId?: string,
+    tingkat?: number,
   ) {
     const skip = (page - 1) * limit;
     const where: any = { sekolah_id: sekolahId };
@@ -45,11 +46,12 @@ export class UsersService {
       ];
     }
 
-    if (kelasId || tahunAjaranId) {
+    if (kelasId || tahunAjaranId || tingkat) {
       where.riwayat_kelas = {
         some: {
           ...(kelasId ? { kelas_id: kelasId } : {}),
           ...(tahunAjaranId ? { tahun_ajaran_id: tahunAjaranId } : {}),
+          ...(tingkat ? { kelas: { tingkat } } : {}),
         },
       };
     }
