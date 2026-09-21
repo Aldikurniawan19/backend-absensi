@@ -71,7 +71,24 @@ export class UsersService {
           createdAt: true,
           riwayat_kelas: {
             include: {
-              kelas: { include: { jurusan: true } },
+              kelas: {
+                include: {
+                  jurusan: true,
+                  penugasan_wali_kelas: {
+                    include: {
+                      guru: {
+                        select: {
+                          id: true,
+                          nama: true,
+                          nip: true,
+                          email: true,
+                          no_hp: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
               tahun_ajaran: true,
             },
             orderBy: { createdAt: 'desc' },
@@ -98,7 +115,24 @@ export class UsersService {
       include: {
         riwayat_kelas: {
           include: {
-            kelas: { include: { jurusan: true } },
+            kelas: {
+              include: {
+                jurusan: true,
+                penugasan_wali_kelas: {
+                  include: {
+                    guru: {
+                      select: {
+                        id: true,
+                        nama: true,
+                        nip: true,
+                        email: true,
+                        no_hp: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
             tahun_ajaran: true,
           },
           orderBy: { createdAt: 'desc' },

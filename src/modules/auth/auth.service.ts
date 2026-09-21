@@ -387,7 +387,22 @@ export class AuthService {
           riwayat_kelas: {
             include: {
               kelas: {
-                include: { jurusan: true },
+                include: {
+                  jurusan: true,
+                  penugasan_wali_kelas: {
+                    include: {
+                      guru: {
+                        select: {
+                          id: true,
+                          nama: true,
+                          nip: true,
+                          email: true,
+                          no_hp: true,
+                        },
+                      },
+                    },
+                  },
+                },
               },
               tahun_ajaran: true,
             },

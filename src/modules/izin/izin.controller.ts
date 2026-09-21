@@ -87,6 +87,14 @@ export class IzinController {
     return { data };
   }
 
+  @Roles(UserRole.SISWA)
+  @Get('my')
+  @ApiOperation({ summary: 'Alias untuk riwayat pengajuan izin milik sendiri' })
+  async getRiwayatSendiriAlias(@CurrentUser() user: JwtPayload) {
+    const data = await this.izinService.getIzinListSiswa(user.sub, user);
+    return { data };
+  }
+
   @Get('siswa/:id')
   @ApiOperation({ summary: 'Lihat riwayat pengajuan izin siswa tertentu' })
   async getIzinListSiswa(

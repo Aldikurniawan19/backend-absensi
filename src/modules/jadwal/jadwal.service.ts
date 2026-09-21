@@ -279,8 +279,9 @@ export class JadwalService {
     return updated;
   }
 
-  async getJadwalList(tahunAjaranId: string, kelasId?: string, guruId?: string, hari?: number) {
-    const where: any = { tahun_ajaran_id: tahunAjaranId };
+  async getJadwalList(tahunAjaranId?: string, kelasId?: string, guruId?: string, hari?: number) {
+    const where: any = {};
+    if (tahunAjaranId) where.tahun_ajaran_id = tahunAjaranId;
     if (kelasId) where.kelas_id = kelasId;
     if (guruId) where.guru_id = guruId;
     if (hari) where.hari = hari;

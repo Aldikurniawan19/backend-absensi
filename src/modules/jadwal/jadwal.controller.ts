@@ -72,12 +72,12 @@ export class JadwalController {
 
   @Get()
   @ApiOperation({ summary: 'Daftar jadwal pelajaran berdasarkan tahun ajaran, kelas, guru, atau hari' })
-  @ApiQuery({ name: 'tahun_ajaran_id', required: true })
+  @ApiQuery({ name: 'tahun_ajaran_id', required: false })
   @ApiQuery({ name: 'kelas_id', required: false })
   @ApiQuery({ name: 'guru_id', required: false })
   @ApiQuery({ name: 'hari', required: false })
   async getJadwalList(
-    @Query('tahun_ajaran_id') tahunAjaranId: string,
+    @Query('tahun_ajaran_id') tahunAjaranId?: string,
     @Query('kelas_id') kelasId?: string,
     @Query('guru_id') guruId?: string,
     @Query('hari') hari?: number,
