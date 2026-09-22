@@ -86,9 +86,50 @@ export class LaporanService {
     }));
   }
 
-  async getLaporanMapel(mapelId: string, tahunAjaranId?: string) {
+  /**
+   * Ambil daftar mata pelajaran yang diampu oleh guru tertentu
+   */
+  async getMapelAmpuGuru(guruId: string) {
+    const guruMapelList = await this.prisma.guruMapel.findMany({
+      where: { guru_id: guruId },
+      include: { mapel: true },
+    });
 
+    const schedules = await this.prisma.jadwalPelajaran.findMany({
+      where: { guru_id: guruId },
+      include: { mapel: true },
+    });
 
+    const mapelMap = new Map<string, any>();
+
+    for (const gm of guruMapelList) {
+      if (gm.mapel && !mapelMap.has(gm.mapel_id)) {
+        mapelMap.set(gm.mapel_id, gm.mapel);
+      }
+    }
+
+    for (const s of schedules) {
+      if (s.mapel && !mapelMap.has(s.mapel_id)) {
+        mapelMap.set(s.mapel_id, s.mapel);
+      }
+    }
+
+    return Array.from(mapelMap.values()).sort((a, b) =>
+      a.nama.localeCompare(b.nama),
+    );
+  }
+
+  /**
+   * Ambil semua mata pelajaran di sekolah untuk Admin
+   */
+  async getAllMapelForAdmin(sekolahId: string) {
+    return this.prisma.mataPelajaran.findMany({
+      where: { sekolah_id: sekolahId },
+      orderBy: { nama: 'asc' },
+    });
+  }
+
+  async getLaporanMapel(mapelId: string, tahunAjaranId?: string, guruId?: string) {
     const mapel = await this.prisma.mataPelajaran.findUnique({
       where: { id: mapelId },
     });
@@ -98,6 +139,7 @@ export class LaporanService {
       jadwal: {
         mapel_id: mapelId,
         ...(tahunAjaranId ? { tahun_ajaran_id: tahunAjaranId } : {}),
+        ...(guruId ? { guru_id: guruId } : {}),
       },
     };
 

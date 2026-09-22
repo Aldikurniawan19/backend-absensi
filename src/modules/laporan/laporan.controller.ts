@@ -21,14 +21,31 @@ export class LaporanController {
   constructor(private readonly laporanService: LaporanService) {}
 
   @Roles(UserRole.GURU, UserRole.ADMIN)
+  @Get('mapel-list')
+  @ApiOperation({
+    summary: 'Daftar mata pelajaran untuk filter laporan (guru: hanya mapel yang diampu, admin: semua mapel)',
+  })
+  async getMapelListForLaporan(@CurrentUser() user: JwtPayload) {
+    if (user.role === UserRole.GURU) {
+      const data = await this.laporanService.getMapelAmpuGuru(user.sub);
+      return { data };
+    } else {
+      const data = await this.laporanService.getAllMapelForAdmin(user.sekolah_id);
+      return { data };
+    }
+  }
+
+  @Roles(UserRole.GURU, UserRole.ADMIN)
   @Get('mapel/:id')
   @ApiOperation({ summary: 'Persentase dan rincian kehadiran per mata pelajaran' })
   @ApiQuery({ name: 'tahun_ajaran_id', required: false })
   async getLaporanMapel(
+    @CurrentUser() user: JwtPayload,
     @Param('id') mapelId: string,
     @Query('tahun_ajaran_id') tahunAjaranId?: string,
   ) {
-    const data = await this.laporanService.getLaporanMapel(mapelId, tahunAjaranId);
+    const guruId = user.role === UserRole.GURU ? user.sub : undefined;
+    const data = await this.laporanService.getLaporanMapel(mapelId, tahunAjaranId, guruId);
     return { data };
   }
 
