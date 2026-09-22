@@ -24,8 +24,14 @@ import {
   ValidateJadwalBatchDto,
   ValidateJadwalItemDto,
 } from './dto/jadwal.dto';
+import {
+  CreateJadwalUjianDto,
+  GenerateJadwalUjianDto,
+  ToggleJadwalUjianStatusDto,
+} from './dto/jadwal-ujian.dto';
 import { JadwalService } from './jadwal.service';
 import { JadwalGeneratorService } from './jadwal-generator.service';
+import { JadwalUjianService } from './jadwal-ujian.service';
 
 @ApiTags('Jadwal Pelajaran & Deteksi Bentrok')
 @ApiBearerAuth()
@@ -35,6 +41,7 @@ export class JadwalController {
   constructor(
     private readonly jadwalService: JadwalService,
     private readonly jadwalGeneratorService: JadwalGeneratorService,
+    private readonly jadwalUjianService: JadwalUjianService,
   ) {}
 
   @Roles(UserRole.GURU)
@@ -185,5 +192,126 @@ export class JadwalController {
   async deleteJadwal(@Param('id') id: string) {
     await this.jadwalService.deleteJadwal(id);
     return { message: 'Jadwal berhasil dihapus' };
+  }
+
+  // =========================================================================
+  // FITUR JADWAL UJIAN (PTS / PAS / PAT) & AKTIVASI MOBILE
+  // =========================================================================
+
+  @Get('ujian/active')
+  @ApiOperation({
+    summary: 'Ambil Jadwal Ujian yang sedang AKTIF untuk tampilan mobile siswa/guru',
+  })
+  @ApiQuery({ name: 'kelas_id', required: false })
+  async getActiveJadwalUjian(
+    @CurrentUser() user: JwtPayload,
+    @Query('kelas_id') kelasId?: string,
+  ) {
+    let resolvedKelasId = kelasId;
+    let resolvedGuruId: string | undefined;
+
+    if (user.role === UserRole.GURU) {
+      resolvedGuruId = user.sub;
+    }
+
+    const data = await this.jadwalUjianService.getActiveJadwalUjian(
+      user.sekolah_id,
+      resolvedKelasId,
+      resolvedGuruId,
+    );
+    return { data };
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Get('ujian')
+  @ApiOperation({ summary: 'Daftar riwayat jadwal ujian di sekolah ini - Khusus Admin' })
+  @ApiQuery({ name: 'tahun_ajaran_id', required: false })
+  async getJadwalUjianList(
+    @CurrentUser() user: JwtPayload,
+    @Query('tahun_ajaran_id') tahunAjaranId?: string,
+  ) {
+    const data = await this.jadwalUjianService.getJadwalUjianList(
+      user.sekolah_id,
+      tahunAjaranId,
+    );
+    return { data };
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Get('ujian/:id')
+  @ApiOperation({ summary: 'Detail jadwal ujian beserta seluruh slot mapel - Khusus Admin' })
+  async getJadwalUjianDetail(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ) {
+    const data = await this.jadwalUjianService.getJadwalUjianDetail(id, user.sekolah_id);
+    return { data };
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Post('ujian/generate-preview')
+  @ApiOperation({
+    summary: 'Simulasi/Pratinjau generate Jadwal Ujian otomatis (PTS / PAS) - Khusus Admin',
+  })
+  async generateJadwalUjianPreview(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: GenerateJadwalUjianDto,
+  ) {
+    const result = await this.jadwalUjianService.generateJadwalUjianPreview(
+      dto,
+      user.sekolah_id,
+    );
+    return { data: result };
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Post('ujian')
+  @ApiOperation({
+    summary: 'Simpan Jadwal Ujian dengan opsi Aktifkan/Nonaktifkan untuk Mobile - Khusus Admin',
+  })
+  async createJadwalUjian(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateJadwalUjianDto,
+  ) {
+    const result = await this.jadwalUjianService.createJadwalUjian(
+      dto,
+      user.sekolah_id,
+      user.sub,
+    );
+    return result;
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Patch('ujian/:id/toggle-status')
+  @ApiOperation({
+    summary: 'Ubah status aktivasi Jadwal Ujian (Aktifkan / Nonaktifkan untuk Mobile) - Khusus Admin',
+  })
+  async toggleJadwalUjianStatus(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: ToggleJadwalUjianStatusDto,
+  ) {
+    const result = await this.jadwalUjianService.toggleStatus(
+      id,
+      dto.is_active,
+      user.sekolah_id,
+      user.sub,
+    );
+    return result;
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Delete('ujian/:id')
+  @ApiOperation({ summary: 'Hapus Jadwal Ujian - Khusus Admin' })
+  async deleteJadwalUjian(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ) {
+    const result = await this.jadwalUjianService.deleteJadwalUjian(
+      id,
+      user.sekolah_id,
+      user.sub,
+    );
+    return result;
   }
 }
