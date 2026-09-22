@@ -323,8 +323,10 @@ export class JadwalUjianService implements OnModuleInit {
     }
 
     // Bangun daftar tanggal ujian (Senin - Sabtu, Minggu diskip)
-    const startDate = new Date(dto.tanggal_mulai);
-    const endDate = new Date(dto.tanggal_selesai);
+    const [sY, sM, sD] = dto.tanggal_mulai.split('-').map(Number);
+    const [eY, eM, eD] = dto.tanggal_selesai.split('-').map(Number);
+    const startDate = new Date(sY, sM - 1, sD);
+    const endDate = new Date(eY, eM - 1, eD);
     const examDates: Array<{ dateStr: string; hari: number; display: string }> = [];
 
     const dayLabels = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
