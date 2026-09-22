@@ -36,11 +36,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         }
       }
     } else {
-      // Log unhandled server error with stack trace internally, but return generic clean message
+      const errMessage =
+        (exception as any)?.message || 'Terjadi kesalahan internal pada server';
       this.logger.error(
-        `Unhandled Exception on ${request.method} ${request.url}`,
+        `Unhandled Exception on ${request.method} ${request.url}: ${errMessage}`,
         exception instanceof Error ? exception.stack : JSON.stringify(exception),
       );
+      message = errMessage;
     }
 
     response.status(status).json({

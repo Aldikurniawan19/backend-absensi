@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -429,98 +431,113 @@ export class JadwalUjianService implements OnModuleInit {
    * Menyimpan Jadwal Ujian baru beserta seluruh item slot ujian
    */
   async createJadwalUjian(dto: CreateJadwalUjianDto, sekolahId: string, actorId: string) {
-    const ujianId = crypto.randomUUID();
+    try {
+      await this.initDatabaseTables();
 
-    return this.prisma.$transaction(
-      async (tx) => {
-        // Jika status aktif dipilih, nonaktifkan jadwal ujian lain di sekolah ini
-        if (dto.is_active) {
-          await tx.$executeRawUnsafe(
-            `UPDATE "jadwal_ujian" SET "is_active" = false WHERE "sekolah_id" = $1`,
-            sekolahId,
-          );
-        }
+      const ujianId = crypto.randomUUID();
 
-        // Buat data header jadwal_ujian
-        await tx.$executeRawUnsafe(
-          `
-          INSERT INTO "jadwal_ujian" (
-            "id", "sekolah_id", "tahun_ajaran_id", "nama_ujian", "jenis", 
-            "tanggal_mulai", "tanggal_selesai", "is_active", "createdAt", "updatedAt"
-          ) VALUES ($1, $2, $3, $4, $5, $6::date, $7::date, $8, NOW(), NOW())
-          `,
-          ujianId,
-          sekolahId,
-          dto.tahun_ajaran_id,
-          dto.nama_ujian,
-          dto.jenis || 'PTS',
-          dto.tanggal_mulai,
-          dto.tanggal_selesai,
-          dto.is_active,
-        );
-
-        // Buat data item ujian dalam batch multi-row INSERT (sangat cepat & hindari timeout)
-        if (dto.items && dto.items.length > 0) {
-          const CHUNK_SIZE = 100;
-          for (let i = 0; i < dto.items.length; i += CHUNK_SIZE) {
-            const chunk = dto.items.slice(i, i + CHUNK_SIZE);
-            const valuePlaceholders: string[] = [];
-            const queryParams: any[] = [];
-            let pIdx = 1;
-
-            for (const item of chunk) {
-              const itemId = crypto.randomUUID();
-              valuePlaceholders.push(
-                `($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, $${pIdx + 4}, $${pIdx + 5}::date, $${pIdx + 6}, $${pIdx + 7}, $${pIdx + 8}, $${pIdx + 9}, NOW(), NOW())`,
-              );
-              queryParams.push(
-                itemId,
-                ujianId,
-                item.kelas_id,
-                item.mapel_id,
-                item.guru_id || null,
-                item.tanggal,
-                item.hari,
-                item.jam_mulai,
-                item.jam_selesai,
-                item.ruangan || null,
-              );
-              pIdx += 10;
-            }
-
-            const insertSql = `
-              INSERT INTO "jadwal_ujian_item" (
-                "id", "jadwal_ujian_id", "kelas_id", "mapel_id", "guru_id",
-                "tanggal", "hari", "jam_mulai", "jam_selesai", "ruangan", "createdAt", "updatedAt"
-              ) VALUES ${valuePlaceholders.join(', ')}
-            `;
-
-            await tx.$executeRawUnsafe(insertSql, ...queryParams);
+      const result = await this.prisma.$transaction(
+        async (tx) => {
+          // Jika status aktif dipilih, nonaktifkan jadwal ujian lain di sekolah ini
+          if (dto.is_active) {
+            await tx.$executeRawUnsafe(
+              `UPDATE "jadwal_ujian" SET "is_active" = false WHERE "sekolah_id" = $1`,
+              sekolahId,
+            );
           }
-        }
 
-        await this.auditService.log({
-          sekolah_id: sekolahId,
-          actor_id: actorId,
-          actor_type: 'ADMIN',
-          action: 'CREATE_JADWAL_UJIAN',
-          resource: 'JADWAL_UJIAN',
-          resource_id: ujianId,
-          details: `Membuat jadwal ujian ${dto.nama_ujian} (${dto.items.length} sesi ujian, Status: ${dto.is_active ? 'AKTIF (Tampil di Mobile)' : 'NONAKTIF'})`,
-        });
+          // Buat data header jadwal_ujian
+          await tx.$executeRawUnsafe(
+            `
+            INSERT INTO "jadwal_ujian" (
+              "id", "sekolah_id", "tahun_ajaran_id", "nama_ujian", "jenis", 
+              "tanggal_mulai", "tanggal_selesai", "is_active", "createdAt", "updatedAt"
+            ) VALUES ($1, $2, $3, $4, $5, CAST($6 AS DATE), CAST($7 AS DATE), $8, NOW(), NOW())
+            `,
+            ujianId,
+            sekolahId,
+            dto.tahun_ajaran_id,
+            dto.nama_ujian,
+            dto.jenis || 'PTS',
+            dto.tanggal_mulai,
+            dto.tanggal_selesai,
+            Boolean(dto.is_active),
+          );
 
-        return {
-          success: true,
-          id: ujianId,
-          message: `Jadwal ujian "${dto.nama_ujian}" berhasil dibuat (${dto.items.length} sesi). Status: ${dto.is_active ? 'Aktif di Mobile' : 'Disimpan sebagai Draf'}.`,
-          is_active: dto.is_active,
-        };
-      },
-      {
-        timeout: 30000,
-        maxWait: 10000,
-      },
-    );
+          // Simpan seluruh slot item ujian secara batch chunk (50 baris per query, sequential)
+          if (dto.items && dto.items.length > 0) {
+            const chunkSize = 50;
+            for (let i = 0; i < dto.items.length; i += chunkSize) {
+              const chunk = dto.items.slice(i, i + chunkSize);
+              const placeholders: string[] = [];
+              const params: any[] = [];
+              let pIdx = 1;
+
+              for (const item of chunk) {
+                const itemId = crypto.randomUUID();
+                placeholders.push(
+                  `($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, $${pIdx + 4}, CAST($${pIdx + 5} AS DATE), $${pIdx + 6}, $${pIdx + 7}, $${pIdx + 8}, $${pIdx + 9}, NOW(), NOW())`,
+                );
+                params.push(
+                  itemId,
+                  ujianId,
+                  String(item.kelas_id),
+                  String(item.mapel_id),
+                  item.guru_id ? String(item.guru_id) : null,
+                  String(item.tanggal),
+                  Number(item.hari) || 1,
+                  String(item.jam_mulai),
+                  String(item.jam_selesai),
+                  item.ruangan ? String(item.ruangan) : null,
+                );
+                pIdx += 10;
+              }
+
+              const insertItemsSql = `
+                INSERT INTO "jadwal_ujian_item" (
+                  "id", "jadwal_ujian_id", "kelas_id", "mapel_id", "guru_id",
+                  "tanggal", "hari", "jam_mulai", "jam_selesai", "ruangan", "createdAt", "updatedAt"
+                ) VALUES ${placeholders.join(', ')}
+              `;
+
+              await tx.$executeRawUnsafe(insertItemsSql, ...params);
+            }
+          }
+
+          return {
+            success: true,
+            id: ujianId,
+            message: `Jadwal ujian "${dto.nama_ujian}" berhasil dibuat (${dto.items?.length || 0} sesi). Status: ${dto.is_active ? 'Aktif di Mobile' : 'Disimpan sebagai Draf'}.`,
+            is_active: Boolean(dto.is_active),
+          };
+        },
+        {
+          timeout: 30000,
+          maxWait: 10000,
+        },
+      );
+
+      // Audit log dicatat di luar transaksi agar tidak membebani transaksi DB
+      await this.auditService.log({
+        sekolah_id: sekolahId,
+        actor_id: actorId,
+        actor_type: UserRole.ADMIN,
+        action: 'CREATE_JADWAL_UJIAN',
+        resource: 'JADWAL_UJIAN',
+        resource_id: ujianId,
+        details: `Membuat jadwal ujian ${dto.nama_ujian} (${dto.items?.length || 0} sesi ujian, Status: ${dto.is_active ? 'AKTIF (Tampil di Mobile)' : 'NONAKTIF'})`,
+      });
+
+      return result;
+    } catch (err: any) {
+      console.error('Error saat membuat jadwal ujian:', err);
+      if (err instanceof HttpException) {
+        throw err;
+      }
+      throw new BadRequestException(
+        err?.message || 'Gagal menyimpan jadwal ujian pada database',
+      );
+    }
   }
 
   /**
@@ -537,7 +554,7 @@ export class JadwalUjianService implements OnModuleInit {
       throw new NotFoundException('Jadwal ujian tidak ditemukan');
     }
 
-    return this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
         if (isActive) {
           // Nonaktifkan jadwal ujian lain di sekolah ini
@@ -553,16 +570,6 @@ export class JadwalUjianService implements OnModuleInit {
           id,
         );
 
-        await this.auditService.log({
-          sekolah_id: sekolahId,
-          actor_id: actorId,
-          actor_type: 'ADMIN',
-          action: 'TOGGLE_JADWAL_UJIAN',
-          resource: 'JADWAL_UJIAN',
-          resource_id: id,
-          details: `${isActive ? 'Mengaktifkan' : 'Menonaktifkan'} jadwal ujian ${existing[0].nama_ujian} untuk aplikasi mobile`,
-        });
-
         return {
           success: true,
           message: isActive
@@ -576,6 +583,18 @@ export class JadwalUjianService implements OnModuleInit {
         maxWait: 5000,
       },
     );
+
+    await this.auditService.log({
+      sekolah_id: sekolahId,
+      actor_id: actorId,
+      actor_type: UserRole.ADMIN,
+      action: 'TOGGLE_JADWAL_UJIAN',
+      resource: 'JADWAL_UJIAN',
+      resource_id: id,
+      details: `${isActive ? 'Mengaktifkan' : 'Menonaktifkan'} jadwal ujian ${existing[0].nama_ujian} untuk aplikasi mobile`,
+    });
+
+    return result;
   }
 
   /**
@@ -606,7 +625,7 @@ export class JadwalUjianService implements OnModuleInit {
     await this.auditService.log({
       sekolah_id: sekolahId,
       actor_id: actorId,
-      actor_type: 'ADMIN',
+      actor_type: UserRole.ADMIN,
       action: 'DELETE_JADWAL_UJIAN',
       resource: 'JADWAL_UJIAN',
       resource_id: id,
