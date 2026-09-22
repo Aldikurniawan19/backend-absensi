@@ -2,11 +2,13 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { AbsensiStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsEnum,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  ValidateNested,
 } from 'class-validator';
 
 export class ScanQrDto {
@@ -57,3 +59,34 @@ export class ManualAbsensiDto {
   @IsString()
   keterangan?: string;
 }
+
+export class ManualAbsensiItemDto {
+  @ApiProperty({ example: 'uuid-siswa' })
+  @IsString()
+  @IsNotEmpty()
+  siswa_id!: string;
+
+  @ApiProperty({ enum: AbsensiStatus, example: AbsensiStatus.HADIR })
+  @IsEnum(AbsensiStatus)
+  status!: AbsensiStatus;
+
+  @ApiPropertyOptional({ example: 'Proyektor rusak, guru mencatat kehadiran manual' })
+  @IsOptional()
+  @IsString()
+  keterangan?: string;
+}
+
+export class BulkManualAbsensiDto {
+  @ApiProperty({ example: 'uuid-sesi' })
+  @IsString()
+  @IsNotEmpty()
+  sesi_id!: string;
+
+  @ApiProperty({ type: [ManualAbsensiItemDto] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ManualAbsensiItemDto)
+  items!: ManualAbsensiItemDto[];
+}
+
+

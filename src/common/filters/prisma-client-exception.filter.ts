@@ -40,6 +40,15 @@ export class PrismaClientExceptionFilter implements ExceptionFilter {
         message = 'Relasi data tidak valid atau data referensi tidak ditemukan';
         break;
       }
+      case 'P2028': {
+        status = HttpStatus.SERVICE_UNAVAILABLE;
+        message = 'Operasi membutuhkan waktu terlalu lama, silakan coba lagi';
+        this.logger.error(
+          `Transaction timeout on ${request.method} ${request.url}`,
+          exception.message,
+        );
+        break;
+      }
       default: {
         this.logger.error(
           `Prisma error code ${exception.code} on ${request.method} ${request.url}`,

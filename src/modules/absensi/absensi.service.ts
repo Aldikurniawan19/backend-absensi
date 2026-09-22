@@ -11,7 +11,7 @@ import { hitungJarakMeter } from '../../common/utils/geo.util';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { SesiGateway } from '../sesi/sesi.gateway';
-import { ManualAbsensiDto, ScanQrDto } from './dto/absensi.dto';
+import { BulkManualAbsensiDto, ManualAbsensiDto, ScanQrDto } from './dto/absensi.dto';
 
 @Injectable()
 export class AbsensiService {
@@ -218,6 +218,72 @@ export class AbsensiService {
       data: absensi,
     };
   }
+
+  /**
+   * Absensi manual massal / bulk oleh guru atau admin (disimpan ketika klik tombol Simpan)
+   */
+  async manualAbsensiBulk(dto: BulkManualAbsensiDto, currentUser: JwtPayload) {
+    const sesi = await this.prisma.sesiAbsensi.findUnique({
+      where: { id: dto.sesi_id },
+      include: { jadwal: true },
+    });
+
+    if (!sesi) throw new NotFoundException('Sesi tidak ditemukan');
+
+    if (currentUser.role === UserRole.GURU && sesi.jadwal.guru_id !== currentUser.sub) {
+      throw new ForbiddenException('Anda tidak berhak mengubah absensi sesi ini');
+    }
+
+    if (!dto.items || dto.items.length === 0) {
+      return { message: 'Tidak ada data yang disimpan', total: 0 };
+    }
+
+    const now = new Date();
+    const defaultKeterangan = `Diubah manual oleh ${currentUser.nama}`;
+
+    await this.prisma.$transaction(
+      dto.items.map((item) =>
+        this.prisma.absensi.upsert({
+          where: {
+            sesi_id_siswa_id: {
+              sesi_id: dto.sesi_id,
+              siswa_id: item.siswa_id,
+            },
+          },
+          create: {
+            sesi_id: dto.sesi_id,
+            siswa_id: item.siswa_id,
+            status: item.status,
+            waktu_scan: now,
+            sumber: AbsensiSumber.MANUAL,
+            keterangan: item.keterangan || defaultKeterangan,
+          },
+          update: {
+            status: item.status,
+            sumber: AbsensiSumber.MANUAL,
+            keterangan: item.keterangan || defaultKeterangan,
+          },
+        }),
+      ),
+    );
+
+    // Audit log
+    await this.auditService.log({
+      sekolah_id: currentUser.sekolah_id,
+      actor_id: currentUser.sub,
+      actor_type: currentUser.role,
+      action: 'MANUAL_ATTENDANCE_BULK',
+      resource: 'ABSENSI',
+      resource_id: dto.sesi_id,
+      details: `Menyimpan manual absensi massal untuk ${dto.items.length} siswa pada sesi ${dto.sesi_id}`,
+    });
+
+    return {
+      message: `Berhasil menyimpan status absensi untuk ${dto.items.length} siswa`,
+      total: dto.items.length,
+    };
+  }
+
 
   async getRiwayatSiswa(
     siswaId: string,

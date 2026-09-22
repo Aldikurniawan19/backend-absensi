@@ -116,7 +116,37 @@ export class SesiService {
     });
 
     if (!sesi) throw new NotFoundException('Sesi absensi tidak ditemukan');
-    return sesi;
+
+    // Ambil seluruh siswa terdaftar di kelas ini pada tahun ajaran terkait
+    const enrolledStudents = await this.prisma.riwayatKelasSiswa.findMany({
+      where: {
+        kelas_id: sesi.jadwal.kelas_id,
+        tahun_ajaran_id: sesi.jadwal.tahun_ajaran_id,
+      },
+      include: {
+        siswa: {
+          select: { id: true, nama: true, nisn: true },
+        },
+      },
+      orderBy: { siswa: { nama: 'asc' } },
+    });
+
+    // Map absensi berdasarkan siswa_id untuk lookup cepat
+    const absensiMap = new Map(
+      sesi.absensi.map((a) => [a.siswa_id, a]),
+    );
+
+    // Gabungkan: setiap siswa terdaftar + status absensi mereka (jika ada)
+    const siswa_terdaftar = enrolledStudents.map((e) => ({
+      siswa_id: e.siswa.id,
+      siswa: e.siswa,
+      absensi: absensiMap.get(e.siswa.id) || null,
+    }));
+
+    return {
+      ...sesi,
+      siswa_terdaftar,
+    };
   }
 
   async updateSesi(id: string, dto: UpdateSesiDto, currentUser: JwtPayload) {
@@ -175,8 +205,67 @@ export class SesiService {
       return { message: 'Sesi sudah selesai', sesi };
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      // 1. Update status sesi jadi SELESAI
+    // Ambil seluruh siswa terdaftar di kelas ini pada tahun ajaran aktif
+    const enrolledStudents = await this.prisma.riwayatKelasSiswa.findMany({
+      where: {
+        kelas_id: sesi.jadwal.kelas_id,
+        tahun_ajaran_id: sesi.jadwal.tahun_ajaran_id,
+      },
+      select: { siswa_id: true },
+    });
+
+    // Cari siapa saja yang sudah absen
+    const attendedStudentIds = new Set(sesi.absensi.map((a) => a.siswa_id));
+
+    // Siswa yang belum absen
+    const absentStudents = enrolledStudents.filter(
+      (s) => !attendedStudentIds.has(s.siswa_id),
+    );
+
+    const today = new Date(sesi.waktu_mulai);
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Ambil semua pengajuan izin yang disetujui untuk siswa yang belum absen (batch query)
+    const absentStudentIds = absentStudents.map((s) => s.siswa_id);
+    const approvedIzinList = absentStudentIds.length > 0
+      ? await this.prisma.pengajuanIzin.findMany({
+          where: {
+            siswa_id: { in: absentStudentIds },
+            tanggal: { gte: today, lt: tomorrow },
+            status_approval: 'DISETUJUI',
+          },
+        })
+      : [];
+
+    // Map siswa_id ke data izin untuk lookup cepat
+    const izinBySiswaId = new Map(
+      approvedIzinList.map((izin) => [izin.siswa_id, izin]),
+    );
+
+    // Siapkan data absensi untuk batch insert
+    const absensiData = absentStudents.map((student) => {
+      const approvedIzin = izinBySiswaId.get(student.siswa_id);
+      const statusAbsen = approvedIzin
+        ? approvedIzin.jenis === 'SAKIT'
+          ? AbsensiStatus.SAKIT
+          : AbsensiStatus.IZIN
+        : AbsensiStatus.ALPA;
+
+      return {
+        sesi_id: sesiId,
+        siswa_id: student.siswa_id,
+        status: statusAbsen,
+        sumber: AbsensiSumber.MANUAL,
+        keterangan: approvedIzin
+          ? 'Otomatis dari pengajuan izin yang disetujui'
+          : 'Tidak hadir saat sesi ditutup',
+      };
+    });
+
+    // Transaksi ringan: hanya update status + batch insert absensi
+    const result = await this.prisma.$transaction(async (tx) => {
       const updatedSesi = await tx.sesiAbsensi.update({
         where: { id: sesiId },
         data: {
@@ -185,60 +274,9 @@ export class SesiService {
         },
       });
 
-      // 2. Ambil seluruh siswa terdaftar di kelas ini pada tahun ajaran aktif
-      const enrolledStudents = await tx.riwayatKelasSiswa.findMany({
-        where: {
-          kelas_id: sesi.jadwal.kelas_id,
-          tahun_ajaran_id: sesi.jadwal.tahun_ajaran_id,
-        },
-        select: { siswa_id: true },
-      });
-
-      // 3. Cari siapa saja yang sudah absen
-      const attendedStudentIds = new Set(sesi.absensi.map((a) => a.siswa_id));
-
-      const today = new Date(sesi.waktu_mulai);
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-
-      // 4. Siswa yang belum absen dicek apakah punya izin/sakit yang sudah diapprove
-      const absentStudents = enrolledStudents.filter(
-        (s) => !attendedStudentIds.has(s.siswa_id),
-      );
-
-      for (const student of absentStudents) {
-        const approvedIzin = await tx.pengajuanIzin.findFirst({
-          where: {
-            siswa_id: student.siswa_id,
-            tanggal: { gte: today, lt: tomorrow },
-            status_approval: 'DISETUJUI',
-          },
-        });
-
-        const statusAbsen = approvedIzin
-          ? approvedIzin.jenis === 'SAKIT'
-            ? AbsensiStatus.SAKIT
-            : AbsensiStatus.IZIN
-          : AbsensiStatus.ALPA;
-
-        await tx.absensi.create({
-          data: {
-            sesi_id: sesiId,
-            siswa_id: student.siswa_id,
-            status: statusAbsen,
-            sumber: AbsensiSumber.MANUAL,
-            keterangan: approvedIzin ? 'Otomatis dari pengajuan izin yang disetujui' : 'Tidak hadir saat sesi ditutup',
-          },
-        });
+      if (absensiData.length > 0) {
+        await tx.absensi.createMany({ data: absensiData });
       }
-
-      // Siarkan event sesi selesai lewat WebSocket
-      this.sesiGateway.emitSesiSelesai(sesiId, {
-        sesi_id: sesiId,
-        status: 'SELESAI',
-        total_alpa: absentStudents.length,
-      });
 
       return {
         message: 'Sesi berhasil ditutup',
@@ -246,6 +284,15 @@ export class SesiService {
         auto_alpa_count: absentStudents.length,
       };
     });
+
+    // Siarkan event sesi selesai lewat WebSocket (di luar transaksi)
+    this.sesiGateway.emitSesiSelesai(sesiId, {
+      sesi_id: sesiId,
+      status: 'SELESAI',
+      total_alpa: absentStudents.length,
+    });
+
+    return result;
   }
 
   async getSesiStatus(sesiId: string) {

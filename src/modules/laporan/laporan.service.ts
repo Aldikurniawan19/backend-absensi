@@ -1,11 +1,94 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 
 @Injectable()
 export class LaporanService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * Ambil daftar kelas yang diampu oleh guru tertentu
+   */
+  async getKelasAmpuGuru(guruId: string) {
+    const schedules = await this.prisma.jadwalPelajaran.findMany({
+      where: { guru_id: guruId },
+      include: {
+        kelas: {
+          include: { jurusan: true },
+        },
+      },
+      orderBy: [
+        { kelas: { tingkat: 'asc' } },
+        { kelas: { nama_rombel: 'asc' } },
+      ],
+    });
+
+    // Cari juga kelas dari penugasan wali kelas
+    const waliKelasList = await this.prisma.penugasanWaliKelas.findMany({
+      where: { guru_id: guruId },
+      include: {
+        kelas: {
+          include: { jurusan: true },
+        },
+      },
+    });
+
+    const kelasMap = new Map<string, any>();
+    for (const s of schedules) {
+      if (s.kelas && !kelasMap.has(s.kelas_id)) {
+        kelasMap.set(s.kelas_id, {
+          id: s.kelas.id,
+          tingkat: s.kelas.tingkat,
+          nama_rombel: s.kelas.nama_rombel,
+          jurusan: s.kelas.jurusan,
+          nama_lengkap: `${s.kelas.tingkat} ${s.kelas.jurusan.kode} ${s.kelas.nama_rombel}`,
+        });
+      }
+    }
+
+    for (const w of waliKelasList) {
+      if (w.kelas && !kelasMap.has(w.kelas_id)) {
+        kelasMap.set(w.kelas_id, {
+          id: w.kelas.id,
+          tingkat: w.kelas.tingkat,
+          nama_rombel: w.kelas.nama_rombel,
+          jurusan: w.kelas.jurusan,
+          nama_lengkap: `${w.kelas.tingkat} ${w.kelas.jurusan.kode} ${w.kelas.nama_rombel}`,
+        });
+      }
+    }
+
+    return Array.from(kelasMap.values()).sort((a, b) =>
+      a.nama_lengkap.localeCompare(b.nama_lengkap, undefined, { numeric: true }),
+    );
+  }
+
+
+  /**
+   * Ambil semua kelas di sekolah untuk Admin
+   */
+  async getAllKelasForAdmin(sekolahId: string) {
+    const list = await this.prisma.kelas.findMany({
+      where: { sekolah_id: sekolahId },
+      include: { jurusan: true },
+      orderBy: [
+        { tingkat: 'asc' },
+        { jurusan: { nama: 'asc' } },
+        { nama_rombel: 'asc' },
+      ],
+    });
+
+    return list.map((k) => ({
+      id: k.id,
+      tingkat: k.tingkat,
+      nama_rombel: k.nama_rombel,
+      jurusan: k.jurusan,
+      nama_lengkap: `${k.tingkat} ${k.jurusan.kode} ${k.nama_rombel}`,
+    }));
+  }
+
   async getLaporanMapel(mapelId: string, tahunAjaranId?: string) {
+
+
     const mapel = await this.prisma.mataPelajaran.findUnique({
       where: { id: mapelId },
     });
@@ -63,7 +146,16 @@ export class LaporanService {
     };
   }
 
-  async getLaporanKelas(kelasId: string, tahunAjaranId?: string) {
+  async getLaporanKelas(kelasId: string, guruId?: string, tahunAjaranId?: string) {
+    if (guruId) {
+      const isMengampu = await this.prisma.jadwalPelajaran.findFirst({
+        where: { guru_id: guruId, kelas_id: kelasId },
+      });
+      if (!isMengampu) {
+        throw new ForbiddenException('Anda tidak memiliki akses ke laporan kelas ini karena bukan kelas yang Anda ampu');
+      }
+    }
+
     const kelas = await this.prisma.kelas.findUnique({
       where: { id: kelasId },
       include: { jurusan: true },
@@ -130,6 +222,7 @@ export class LaporanService {
       siswa_rekap: studentStats,
     };
   }
+
 
   async getDashboardOverview(sekolahId: string) {
     const today = new Date();

@@ -16,7 +16,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { AbsensiService } from './absensi.service';
-import { ManualAbsensiDto, ScanQrDto } from './dto/absensi.dto';
+import { BulkManualAbsensiDto, ManualAbsensiDto, ScanQrDto } from './dto/absensi.dto';
 
 @ApiTags('Absensi (Scan Siswa & Manual Guru)')
 @ApiBearerAuth()
@@ -45,7 +45,7 @@ export class AbsensiController {
   @Post('manual')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Tandai absensi manual untuk siswa (cadangan jika proyektor/QR bermasalah)',
+    summary: 'Tandai absensi manual untuk satu siswa',
   })
   async manualAbsensi(
     @CurrentUser() user: JwtPayload,
@@ -54,6 +54,21 @@ export class AbsensiController {
     const result = await this.absensiService.manualAbsensi(dto, user);
     return result;
   }
+
+  @Roles(UserRole.GURU, UserRole.ADMIN)
+  @Post('manual/bulk')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Simpan absensi manual secara massal untuk banyak siswa saat guru klik Simpan',
+  })
+  async manualAbsensiBulk(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: BulkManualAbsensiDto,
+  ) {
+    const result = await this.absensiService.manualAbsensiBulk(dto, user);
+    return result;
+  }
+
 
   @Get('siswa/:id')
   @ApiOperation({ summary: 'Riwayat kehadiran siswa tertentu' })
