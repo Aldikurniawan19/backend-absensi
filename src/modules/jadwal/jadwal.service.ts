@@ -279,22 +279,82 @@ export class JadwalService {
     return updated;
   }
 
-  async getJadwalList(tahunAjaranId?: string, kelasId?: string, guruId?: string, hari?: number) {
+  async getJadwalList(
+    tahunAjaranId?: string,
+    kelasId?: string,
+    guruId?: string,
+    hari?: number,
+  ) {
     const where: any = {};
-    if (tahunAjaranId) where.tahun_ajaran_id = tahunAjaranId;
+
+    if (tahunAjaranId && tahunAjaranId !== 'ALL') {
+      where.tahun_ajaran_id = tahunAjaranId;
+    } else if (!tahunAjaranId) {
+      // Jika tahunAjaranId tidak disertakan secara eksplisit, ambil Tahun Ajaran yang berstatus 'AKTIF'
+      let sekolahId: string | undefined;
+      if (kelasId) {
+        const k = await this.prisma.kelas.findUnique({
+          where: { id: kelasId },
+          select: { sekolah_id: true },
+        });
+        sekolahId = k?.sekolah_id;
+      } else if (guruId) {
+        const g = await this.prisma.guru.findUnique({
+          where: { id: guruId },
+          select: { sekolah_id: true },
+        });
+        sekolahId = g?.sekolah_id;
+      }
+
+      const activeTA = await this.prisma.tahunAjaran.findFirst({
+        where: {
+          status: 'AKTIF',
+          ...(sekolahId ? { sekolah_id: sekolahId } : {}),
+        },
+      });
+
+      if (activeTA) {
+        where.tahun_ajaran_id = activeTA.id;
+      } else {
+        // Jika belum ada tahun ajaran aktif, kembalikan array kosong agar jadwal semester lama tidak bercampur
+        return [];
+      }
+    }
+
     if (kelasId) where.kelas_id = kelasId;
     if (guruId) where.guru_id = guruId;
     if (hari) where.hari = hari;
 
-    return this.prisma.jadwalPelajaran.findMany({
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const schedules = await this.prisma.jadwalPelajaran.findMany({
       where,
       include: {
         kelas: { include: { jurusan: true } },
         guru: { select: { id: true, nama: true, nip: true, email: true } },
         mapel: true,
+        tahun_ajaran: true,
+        sesi_absensi: {
+          where: {
+            createdAt: { gte: startOfToday, lte: endOfToday },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
       },
       orderBy: [{ hari: 'asc' }, { jam_mulai: 'asc' }],
     });
+
+    return schedules.map((s) => ({
+      ...s,
+      nama_kelas_lengkap: `${s.kelas.tingkat} ${s.kelas.jurusan.kode} ${s.kelas.nama_rombel}`,
+      active_sesi: s.sesi_absensi[0] || null,
+      sesi_hari_ini: s.sesi_absensi[0] || null,
+    }));
   }
 
   async getJadwalHariIni(guruId: string, customHari?: number) {

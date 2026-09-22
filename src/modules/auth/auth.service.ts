@@ -406,7 +406,7 @@ export class AuthService {
               },
               tahun_ajaran: true,
             },
-            orderBy: { createdAt: 'desc' },
+            orderBy: [{ tahun_ajaran: { status: 'asc' } }, { createdAt: 'desc' }],
           },
         },
       });

@@ -187,13 +187,66 @@ export class GenerateSmaScheduleDto {
   replace_existing?: boolean;
 }
 
+export class ApplyGeneratedScheduleItemDto {
+  @ApiProperty({ example: 'uuid-kelas' })
+  @IsString()
+  @IsNotEmpty()
+  kelas_id!: string;
+
+  @ApiProperty({ example: 'uuid-guru' })
+  @IsString()
+  @IsNotEmpty()
+  guru_id!: string;
+
+  @ApiProperty({ example: 'uuid-mapel' })
+  @IsString()
+  @IsNotEmpty()
+  mapel_id!: string;
+
+  @ApiPropertyOptional({ example: 'uuid-tahun-ajaran' })
+  @IsOptional()
+  @IsString()
+  tahun_ajaran_id?: string;
+
+  @ApiPropertyOptional({ example: 'Matematika' })
+  @IsOptional()
+  @IsString()
+  mapel_nama?: string;
+
+  @ApiPropertyOptional({ example: 'MTK' })
+  @IsOptional()
+  @IsString()
+  mapel_kode?: string;
+
+  @ApiProperty({ example: 1, description: '1 = Senin, 2 = Selasa, ..., 7 = Minggu' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(7)
+  hari!: number;
+
+  @ApiProperty({ example: '07:30', description: 'Format HH:mm' })
+  @IsString()
+  @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, {
+    message: 'Format jam_mulai harus berupa HH:mm (contoh 07:30)',
+  })
+  jam_mulai!: string;
+
+  @ApiProperty({ example: '09:00', description: 'Format HH:mm' })
+  @IsString()
+  @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, {
+    message: 'Format jam_selesai harus berupa HH:mm (contoh 09:00)',
+  })
+  jam_selesai!: string;
+}
+
 export class ApplyGeneratedScheduleDto {
   @ApiProperty({ example: 'uuid-tahun-ajaran' })
   @IsString()
   @IsNotEmpty()
   tahun_ajaran_id!: string;
 
-  @ApiProperty({ example: true, description: 'Hapus jadwal lama di kelas-kelas yang di-generate' })
+  @ApiPropertyOptional({ example: true, description: 'Hapus jadwal lama di kelas-kelas yang di-generate' })
   @IsOptional()
   replace_existing?: boolean;
 
@@ -201,10 +254,10 @@ export class ApplyGeneratedScheduleDto {
   @IsArray()
   target_kelas_ids!: string[];
 
-  @ApiProperty({ type: [CreateJadwalDto] })
+  @ApiProperty({ type: [ApplyGeneratedScheduleItemDto] })
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => CreateJadwalDto)
-  schedules!: CreateJadwalDto[];
+  @Type(() => ApplyGeneratedScheduleItemDto)
+  schedules!: ApplyGeneratedScheduleItemDto[];
 }
 

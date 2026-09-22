@@ -177,14 +177,35 @@ export class JadwalGeneratorService {
 
       for (const curMapel of curriculumSubjects) {
         // Cocokkan dengan Master Data Mata Pelajaran di database
-        const dbMapel = this.findMatchingMapel(curMapel.mapelNama, curMapel.kodeRekomendasi, mapelList);
-        const mapelId = dbMapel?.id || `virtual_${curMapel.kodeRekomendasi}`;
-        const mapelNama = dbMapel?.nama || curMapel.mapelNama;
-        const mapelKode = dbMapel?.kode || curMapel.kodeRekomendasi;
+        let dbMapel = this.findMatchingMapel(curMapel.mapelNama, curMapel.kodeRekomendasi, mapelList);
+        if (!dbMapel) {
+          // Buat otomatis master mapel jika belum ada di sekolah ini
+          dbMapel = await this.prisma.mataPelajaran.upsert({
+            where: {
+              sekolah_id_kode: {
+                sekolah_id: sekolahId,
+                kode: curMapel.kodeRekomendasi,
+              },
+            },
+            update: {
+              nama: curMapel.mapelNama,
+            },
+            create: {
+              sekolah_id: sekolahId,
+              kode: curMapel.kodeRekomendasi,
+              nama: curMapel.mapelNama,
+            },
+          });
+          mapelList.push(dbMapel);
+        }
+
+        const mapelId = dbMapel.id;
+        const mapelNama = dbMapel.nama;
+        const mapelKode = dbMapel.kode;
 
         // Tentukan Guru Pengampu
         const assignedGuru = this.pickTeacherForMapel(
-          dbMapel?.id,
+          dbMapel.id,
           mapelNama,
           guruList,
           teacherSubjectAssignmentCounter,
@@ -293,6 +314,38 @@ export class JadwalGeneratorService {
     dto: ApplyGeneratedScheduleDto,
     actorId: string,
   ) {
+    const tahunAjaran = await this.prisma.tahunAjaran.findUnique({
+      where: { id: dto.tahun_ajaran_id },
+    });
+    if (!tahunAjaran) {
+      throw new NotFoundException('Tahun ajaran tidak ditemukan');
+    }
+    const sekolahId = tahunAjaran.sekolah_id;
+
+    // Ambil semua mapel di sekolah ini untuk pencocokan & resolusi
+    const allMapel = await this.prisma.mataPelajaran.findMany({
+      where: { sekolah_id: sekolahId },
+    });
+    const mapelById = new Map<string, any>(allMapel.map((m) => [m.id, m]));
+    const mapelByKode = new Map<string, any>(allMapel.map((m) => [m.kode.toUpperCase(), m]));
+
+    // Ambil semua guru di sekolah ini untuk fallback jika guru_id tidak valid
+    const allGuru = await this.prisma.guru.findMany({
+      where: { sekolah_id: sekolahId },
+    });
+    const guruById = new Map<string, any>(allGuru.map((g) => [g.id, g]));
+    const defaultGuruId = allGuru[0]?.id;
+
+    if (!defaultGuruId) {
+      throw new BadRequestException('Tidak ada guru yang terdaftar di sekolah ini.');
+    }
+
+    // Ambil semua kelas di sekolah ini untuk validasi
+    const allKelas = await this.prisma.kelas.findMany({
+      where: { sekolah_id: sekolahId },
+    });
+    const kelasById = new Map<string, any>(allKelas.map((k) => [k.id, k]));
+
     return this.prisma.$transaction(async (tx) => {
       // 1. Jika replace_existing aktif, bersihkan jadwal lama pada kelas target
       if (dto.replace_existing && dto.target_kelas_ids && dto.target_kelas_ids.length > 0) {
@@ -304,22 +357,75 @@ export class JadwalGeneratorService {
         });
       }
 
-      // 2. Buat jadwal baru secara batch
-      const createdCount = await tx.jadwalPelajaran.createMany({
-        data: dto.schedules.map((s) => ({
+      // 2. Siapkan data jadwal yang sudah tervalidasi dan teresolusi ke record DB riil
+      const validScheduleData: Array<{
+        kelas_id: string;
+        guru_id: string;
+        mapel_id: string;
+        tahun_ajaran_id: string;
+        hari: number;
+        jam_mulai: string;
+        jam_selesai: string;
+      }> = [];
+
+      for (const s of dto.schedules) {
+        // Validasi kelas_id
+        if (!kelasById.has(s.kelas_id)) {
+          continue;
+        }
+
+        // Resolusi guru_id
+        const finalGuruId = guruById.has(s.guru_id) ? s.guru_id : defaultGuruId;
+
+        // Resolusi mapel_id
+        let finalMapelId: string | undefined;
+        if (mapelById.has(s.mapel_id)) {
+          finalMapelId = s.mapel_id;
+        } else {
+          // Kemungkinan mapel_id adalah "virtual_MAT" atau kode mapel
+          const cleanKode = s.mapel_id.replace(/^virtual_/, '').toUpperCase();
+          if (mapelByKode.has(cleanKode)) {
+            finalMapelId = mapelByKode.get(cleanKode)!.id;
+          } else {
+            // Buat mata pelajaran baru di database jika belum ada
+            const createdMapel = await tx.mataPelajaran.create({
+              data: {
+                sekolah_id: sekolahId,
+                kode: cleanKode,
+                nama: s.mapel_nama || cleanKode,
+              },
+            });
+            mapelById.set(createdMapel.id, createdMapel);
+            mapelByKode.set(cleanKode, createdMapel);
+            finalMapelId = createdMapel.id;
+          }
+        }
+
+        if (!finalMapelId) continue;
+
+        validScheduleData.push({
           kelas_id: s.kelas_id,
-          guru_id: s.guru_id,
-          mapel_id: s.mapel_id,
+          guru_id: finalGuruId,
+          mapel_id: finalMapelId,
           tahun_ajaran_id: dto.tahun_ajaran_id,
           hari: s.hari,
           jam_mulai: s.jam_mulai,
           jam_selesai: s.jam_selesai,
-        })),
+        });
+      }
+
+      if (validScheduleData.length === 0) {
+        throw new BadRequestException('Tidak ada data jadwal valid yang dapat diterapkan.');
+      }
+
+      // 3. Buat jadwal baru secara batch
+      const createdCount = await tx.jadwalPelajaran.createMany({
+        data: validScheduleData,
       });
 
-      // 3. Catat audit log
+      // 4. Catat audit log
       await this.auditService.log({
-        sekolah_id: (await tx.tahunAjaran.findUnique({ where: { id: dto.tahun_ajaran_id } }))?.sekolah_id || '',
+        sekolah_id: sekolahId,
         actor_id: actorId,
         actor_type: 'ADMIN',
         action: 'AUTO_GENERATE_JADWAL_SMA',
