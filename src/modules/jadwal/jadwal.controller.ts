@@ -239,12 +239,30 @@ export class JadwalController {
 
   @Roles(UserRole.ADMIN)
   @Get('ujian/:id')
-  @ApiOperation({ summary: 'Detail jadwal ujian beserta seluruh slot mapel - Khusus Admin' })
+  @ApiOperation({ summary: 'Detail jadwal ujian beserta slot mapel (dengan pagination & filter) - Khusus Admin' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'kelas_id', required: false, type: String })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({ name: 'tanggal', required: false, type: String })
   async getJadwalUjianDetail(
     @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
+    @Query('page') page: number = 1,
+    @Query('limit') limit: number = 20,
+    @Query('kelas_id') kelasId?: string,
+    @Query('search') search?: string,
+    @Query('tanggal') tanggal?: string,
   ) {
-    const data = await this.jadwalUjianService.getJadwalUjianDetail(id, user.sekolah_id);
+    const data = await this.jadwalUjianService.getJadwalUjianDetail(
+      id,
+      user.sekolah_id,
+      Number(page) || 1,
+      Number(limit) || 20,
+      kelasId,
+      search,
+      tanggal,
+    );
     return { data };
   }
 

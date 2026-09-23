@@ -153,9 +153,17 @@ export class JadwalUjianService implements OnModuleInit {
   }
 
   /**
-   * Mengambil detail jadwal ujian beserta seluruh slot ujian per kelas
+   * Mengambil detail jadwal ujian beserta slot sesi ujian (dengan pagination & filter optimal)
    */
-  async getJadwalUjianDetail(id: string, sekolahId: string) {
+  async getJadwalUjianDetail(
+    id: string,
+    sekolahId: string,
+    page: number = 1,
+    limit: number = 20,
+    kelasId?: string,
+    search?: string,
+    tanggal?: string,
+  ) {
     const ujianRows = await this.prisma.$queryRawUnsafe<any[]>(
       `
       SELECT 
@@ -179,8 +187,53 @@ export class JadwalUjianService implements OnModuleInit {
 
     const ujian = ujianRows[0];
 
-    const items = await this.prisma.$queryRawUnsafe<any[]>(
-      `
+    // Bangun filter query items
+    let whereClause = `WHERE i.jadwal_ujian_id = $1`;
+    const params: any[] = [id];
+    let paramIndex = 2;
+
+    if (kelasId && kelasId !== 'ALL') {
+      whereClause += ` AND i.kelas_id = $${paramIndex}`;
+      params.push(kelasId);
+      paramIndex++;
+    }
+
+    if (tanggal) {
+      whereClause += ` AND i.tanggal = CAST($${paramIndex} AS DATE)`;
+      params.push(tanggal);
+      paramIndex++;
+    }
+
+    if (search && search.trim() !== '') {
+      const searchPattern = `%${search.trim()}%`;
+      whereClause += ` AND (m.nama ILIKE $${paramIndex} OR m.kode ILIKE $${paramIndex} OR g.nama ILIKE $${paramIndex} OR i.ruangan ILIKE $${paramIndex})`;
+      params.push(searchPattern);
+      paramIndex++;
+    }
+
+    // Hitung total data sesuai filter
+    const countQuery = `
+      SELECT COUNT(i.id)::int as total
+      FROM "jadwal_ujian_item" i
+      LEFT JOIN "mata_pelajaran" m ON i.mapel_id = m.id
+      LEFT JOIN "guru" g ON i.guru_id = g.id
+      LEFT JOIN "kelas" k ON i.kelas_id = k.id
+      ${whereClause}
+    `;
+
+    const countResult = await this.prisma.$queryRawUnsafe<Array<{ total: number }>>(
+      countQuery,
+      ...params,
+    );
+    const total = Number(countResult[0]?.total || 0);
+
+    // Ambil data terpaginasi
+    const safeLimit = Math.max(1, Math.min(100, limit));
+    const safePage = Math.max(1, page);
+    const offset = (safePage - 1) * safeLimit;
+
+    const dataParams = [...params, safeLimit, offset];
+    const dataQuery = `
       SELECT 
         i.id, i.jadwal_ujian_id, i.kelas_id, i.mapel_id, i.guru_id,
         TO_CHAR(i.tanggal, 'YYYY-MM-DD') as tanggal,
@@ -193,16 +246,23 @@ export class JadwalUjianService implements OnModuleInit {
       LEFT JOIN "guru" g ON i.guru_id = g.id
       LEFT JOIN "kelas" k ON i.kelas_id = k.id
       LEFT JOIN "jurusan" j ON k.jurusan_id = j.id
-      WHERE i.jadwal_ujian_id = $1
+      ${whereClause}
       ORDER BY i.tanggal ASC, i.jam_mulai ASC, k.tingkat ASC, k.nama_rombel ASC
-      `,
-      id,
-    );
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+
+    const items = await this.prisma.$queryRawUnsafe<any[]>(dataQuery, ...dataParams);
 
     return {
       ...ujian,
       is_active: Boolean(ujian.is_active),
       items,
+      meta: {
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: Math.ceil(total / safeLimit) || 1,
+      },
     };
   }
 
