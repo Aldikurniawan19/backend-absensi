@@ -156,15 +156,59 @@ export class CreateJadwalUjianDto {
   @IsNotEmpty()
   tanggal_selesai!: string;
 
+  @ApiPropertyOptional({ example: 2, description: 'Jumlah sesi ujian per hari' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  sesi_per_hari?: number = 2;
+
+  @ApiPropertyOptional({ example: '07:30', description: 'Jam mulai sesi 1' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+  jam_mulai_sesi_1?: string = '07:30';
+
+  @ApiPropertyOptional({ example: '09:00', description: 'Jam selesai sesi 1' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+  jam_selesai_sesi_1?: string = '09:00';
+
+  @ApiPropertyOptional({ example: '09:30', description: 'Jam mulai sesi 2' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+  jam_mulai_sesi_2?: string = '09:30';
+
+  @ApiPropertyOptional({ example: '11:00', description: 'Jam selesai sesi 2' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+  jam_selesai_sesi_2?: string = '11:00';
+
+  @ApiPropertyOptional({ type: [String], description: 'Daftar ID Kelas target' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  kelas_ids?: string[];
+
+  @ApiPropertyOptional({ type: [Number], description: 'Daftar Tingkat (10, 11, 12)' })
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  tingkat_list?: number[];
+
   @ApiProperty({ example: true, description: 'Pilihan opsi aktifkan agar langsung tampil di mobile' })
   @IsBoolean()
   is_active!: boolean;
 
-  @ApiProperty({ type: [JadwalUjianItemInputDto] })
+  @ApiPropertyOptional({ type: [JadwalUjianItemInputDto] })
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => JadwalUjianItemInputDto)
-  items!: JadwalUjianItemInputDto[];
+  items?: JadwalUjianItemInputDto[];
 }
 
 export class ToggleJadwalUjianStatusDto {

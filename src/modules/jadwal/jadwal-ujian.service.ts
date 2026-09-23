@@ -99,6 +99,7 @@ export class JadwalUjianService implements OnModuleInit {
         CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_sekolah" ON "jadwal_ujian"("sekolah_id", "is_active");
         CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_item_parent" ON "jadwal_ujian_item"("jadwal_ujian_id");
         CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_item_kelas" ON "jadwal_ujian_item"("kelas_id", "tanggal");
+        CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_item_guru" ON "jadwal_ujian_item"("guru_id", "tanggal");
       `);
     } catch (err) {
       console.warn('Inisialisasi tabel jadwal_ujian selesai / menggunakan schema eksisting:', err);
@@ -436,6 +437,41 @@ export class JadwalUjianService implements OnModuleInit {
 
       const ujianId = crypto.randomUUID();
 
+      // Jika items tidak dikirim (optimasi payload), generate langsung di server
+      let itemsToInsert = dto.items;
+      if (!itemsToInsert || itemsToInsert.length === 0) {
+        const preview = await this.generateJadwalUjianPreview(
+          {
+            nama_ujian: dto.nama_ujian,
+            jenis: dto.jenis,
+            tahun_ajaran_id: dto.tahun_ajaran_id,
+            tanggal_mulai: dto.tanggal_mulai,
+            tanggal_selesai: dto.tanggal_selesai,
+            sesi_per_hari: dto.sesi_per_hari,
+            jam_mulai_sesi_1: dto.jam_mulai_sesi_1,
+            jam_selesai_sesi_1: dto.jam_selesai_sesi_1,
+            jam_mulai_sesi_2: dto.jam_mulai_sesi_2,
+            jam_selesai_sesi_2: dto.jam_selesai_sesi_2,
+            tingkat_list: dto.tingkat_list,
+            kelas_ids: dto.kelas_ids,
+            is_active: dto.is_active,
+          },
+          sekolahId,
+        );
+        itemsToInsert = (preview.items || []).map((it) => ({
+          kelas_id: it.kelas_id,
+          mapel_id: it.mapel_id,
+          guru_id: it.guru_id || undefined,
+          tanggal: it.tanggal,
+          hari: it.hari,
+          jam_mulai: it.jam_mulai,
+          jam_selesai: it.jam_selesai,
+          ruangan: it.ruangan || undefined,
+        }));
+      }
+
+      const totalItemsCount = itemsToInsert ? itemsToInsert.length : 0;
+
       const result = await this.prisma.$transaction(
         async (tx) => {
           // Jika status aktif dipilih, nonaktifkan jadwal ujian lain di sekolah ini
@@ -464,11 +500,11 @@ export class JadwalUjianService implements OnModuleInit {
             Boolean(dto.is_active),
           );
 
-          // Simpan seluruh slot item ujian secara batch chunk (50 baris per query, sequential)
-          if (dto.items && dto.items.length > 0) {
-            const chunkSize = 50;
-            for (let i = 0; i < dto.items.length; i += chunkSize) {
-              const chunk = dto.items.slice(i, i + chunkSize);
+          // Simpan seluruh slot item ujian secara batch chunk (100 baris per query)
+          if (itemsToInsert && itemsToInsert.length > 0) {
+            const chunkSize = 100;
+            for (let i = 0; i < itemsToInsert.length; i += chunkSize) {
+              const chunk = itemsToInsert.slice(i, i + chunkSize);
               const placeholders: string[] = [];
               const params: any[] = [];
               let pIdx = 1;
@@ -507,7 +543,7 @@ export class JadwalUjianService implements OnModuleInit {
           return {
             success: true,
             id: ujianId,
-            message: `Jadwal ujian "${dto.nama_ujian}" berhasil dibuat (${dto.items?.length || 0} sesi). Status: ${dto.is_active ? 'Aktif di Mobile' : 'Disimpan sebagai Draf'}.`,
+            message: `Jadwal ujian "${dto.nama_ujian}" berhasil dibuat (${totalItemsCount} sesi). Status: ${dto.is_active ? 'Aktif di Mobile' : 'Disimpan sebagai Draf'}.`,
             is_active: Boolean(dto.is_active),
           };
         },
