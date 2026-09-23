@@ -3,6 +3,7 @@ import {
   ExecutionContext,
   Injectable,
   NestInterceptor,
+  StreamableFile,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
@@ -16,16 +17,20 @@ export interface Response<T> {
 
 @Injectable()
 export class TransformResponseInterceptor<T>
-  implements NestInterceptor<T, Response<T>>
+  implements NestInterceptor<T, any>
 {
   intercept(
     context: ExecutionContext,
     next: CallHandler,
-  ): Observable<Response<T>> {
+  ): Observable<any> {
     return next.handle().pipe(
       map((result) => {
-        // Jika response sudah terformat atau berupa file stream, jangan diubah
-        if (result && typeof result === 'object' && 'success' in result) {
+        // Jika response berupa StreamableFile, Buffer, atau sudah terformat, jangan diubah
+        if (
+          result instanceof StreamableFile ||
+          Buffer.isBuffer(result) ||
+          (result && typeof result === 'object' && ('getStream' in result || 'success' in result))
+        ) {
           return result;
         }
 
