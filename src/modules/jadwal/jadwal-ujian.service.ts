@@ -1157,7 +1157,8 @@ export class JadwalUjianService implements OnModuleInit {
   }
 
   /**
-   * Men-generate Dokumen PDF Kartu Ujian Siswa (A5 Landscape)
+   * Men-generate Dokumen PDF Kartu Ujian Siswa (A5 Landscape) Tanpa Tabel Mapel,
+   * Memuat Data Lengkap Peserta, Lokasi Ruang, Nomor Kursi, Tata Tertib, dan Pengesahan Resmi.
    */
   async generateKartuUjianPdf(
     jadwalUjianId: string,
@@ -1228,33 +1229,10 @@ export class JadwalUjianService implements OnModuleInit {
       throw new BadRequestException('Belum ada kartu peserta ujian yang ter-generate untuk kriteria ini. Silakan klik tombol "Generate Kartu" terlebih dahulu.');
     }
 
-    // Ambil seluruh jadwal ujian item untuk mapping jadwal per kelas
-    const scheduleItems = await this.prisma.$queryRawUnsafe<any[]>(
-      `
-      SELECT 
-        i.kelas_id,
-        TO_CHAR(i.tanggal, 'YYYY-MM-DD') as tanggal,
-        i.hari, i.jam_mulai, i.jam_selesai, i.ruangan,
-        m.nama as mapel_nama, m.kode as mapel_kode
-      FROM "jadwal_ujian_item" i
-      JOIN "mata_pelajaran" m ON i.mapel_id = m.id
-      WHERE i.jadwal_ujian_id = $1
-      ORDER BY i.tanggal ASC, i.jam_mulai ASC
-      `,
-      jadwalUjianId,
-    );
-
-    const scheduleByClass = new Map<string, any[]>();
-    for (const item of scheduleItems) {
-      const list = scheduleByClass.get(item.kelas_id) || [];
-      list.push(item);
-      scheduleByClass.set(item.kelas_id, list);
-    }
-
     const doc = new PDFDocument({
       size: 'A5',
       layout: 'landscape',
-      margin: 25,
+      margin: 20,
       autoFirstPage: false,
     });
 
@@ -1265,149 +1243,187 @@ export class JadwalUjianService implements OnModuleInit {
       doc.on('error', (err: any) => reject(err));
     });
 
-    const dayLabels: Record<number, string> = {
-      1: 'Senin',
-      2: 'Selasa',
-      3: 'Rabu',
-      4: 'Kamis',
-      5: 'Jumat',
-      6: 'Sabtu',
-      7: 'Minggu',
+    const formatTgl = (tglInput: any): string => {
+      if (!tglInput) return '-';
+      try {
+        const d = new Date(tglInput);
+        if (isNaN(d.getTime())) return String(tglInput);
+        const bulan = [
+          'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+          'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+        ];
+        return `${d.getDate()} ${bulan[d.getMonth()]} ${d.getFullYear()}`;
+      } catch (_) {
+        return String(tglInput);
+      }
     };
 
+    const periodeText = ujian.tanggal_mulai && ujian.tanggal_selesai
+      ? `${formatTgl(ujian.tanggal_mulai)} s/d ${formatTgl(ujian.tanggal_selesai)}`
+      : '-';
+
     for (const card of cards) {
-      doc.addPage({ size: 'A5', layout: 'landscape', margin: 25 });
+      doc.addPage({ size: 'A5', layout: 'landscape', margin: 20 });
 
-      // Lebar halaman A5 landscape = 595.28 pt, tinggi = 419.53 pt
-      // Border kartu luar (stroke rapi)
-      doc.rect(20, 15, 555, 390).lineWidth(1).strokeColor('#CBD5E1').stroke();
+      // Lebar A5 landscape = 595.28 pt, tinggi = 419.53 pt
+      // 1. Frame Luar Kartu
+      doc.roundedRect(20, 14, 555, 392, 8).lineWidth(1.2).strokeColor('#0284C7').stroke();
+      doc.roundedRect(23, 17, 549, 386, 6).lineWidth(0.5).strokeColor('#E2E8F0').stroke();
 
-      // 1. KOP SURAT SEKOLAH
-      doc.font('Helvetica-Bold').fontSize(12).fillColor('#0F172A')
+      // 2. KOP SURAT SEKOLAH
+      doc.font('Helvetica-Bold').fontSize(12.5).fillColor('#0F172A')
         .text(String(ujian.sekolah_nama || 'SEKOLAH MENENGAH ATAS').toUpperCase(), 25, 25, { align: 'center' });
 
       doc.font('Helvetica').fontSize(7.5).fillColor('#64748B')
         .text(
-          `NPSN: ${String(ujian.sekolah_npsn || '-')} • Alamat: ${String(ujian.sekolah_alamat || 'Indonesia')}`,
+          `NPSN: ${String(ujian.sekolah_npsn || '-')}  •  Alamat: ${String(ujian.sekolah_alamat || 'Indonesia')}`,
           25,
           41,
           { align: 'center' },
         );
 
-      // Garis ganda pembatas KOP
-      doc.moveTo(35, 54).lineTo(560, 54).lineWidth(1.5).strokeColor('#1E293B').stroke();
+      // Garis Ganda Pembatas KOP
+      doc.moveTo(35, 54).lineTo(560, 54).lineWidth(1.5).strokeColor('#0F172A').stroke();
       doc.moveTo(35, 57).lineTo(560, 57).lineWidth(0.5).strokeColor('#94A3B8').stroke();
 
-      // 2. JUDUL KARTU
-      doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#0F172A')
+      // 3. JUDUL KARTU & INFO UJIAN
+      doc.font('Helvetica-Bold').fontSize(11).fillColor('#0F172A')
         .text('KARTU TANDA PESERTA UJIAN', 25, 64, { align: 'center' });
 
-      doc.font('Helvetica').fontSize(8).fillColor('#475569')
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#2563EB')
+        .text(String(ujian.nama_ujian || 'Ujian').toUpperCase(), 25, 78, { align: 'center' });
+
+      doc.font('Helvetica').fontSize(7.5).fillColor('#475569')
         .text(
-          `${String(ujian.nama_ujian || 'Ujian')} • Tahun Ajaran ${String(ujian.tahun_ajaran_nama || '')} (${String(ujian.tahun_ajaran_semester || '')})`,
+          `Tahun Ajaran: ${String(ujian.tahun_ajaran_nama || '-')} (${String(ujian.tahun_ajaran_semester || '-')})  •  Periode: ${periodeText}`,
           25,
-          77,
+          90,
           { align: 'center' },
         );
 
-      // 3. INFORMASI SISWA & RUANG UJIAN (DUA KOLOM)
-      // Kolom Kiri: Biodata Siswa
-      const topInfoY = 94;
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Nama Peserta', 35, topInfoY);
-      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.siswa_nama || '-')}`, 105, topInfoY);
+      // 4. BAGIAN TENGAH (DUA KOLOM: IDENTITAS PESERTA & LOKASI/KURSI/FOTO)
+      // Kolom Kiri: Box Identitas Peserta Ujian (Lebar: 345, Tinggi: 138)
+      const leftX = 35;
+      const midY = 104;
+      const leftW = 345;
+      const midH = 138;
 
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('NISN', 35, topInfoY + 14);
-      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.siswa_nisn || '-')}`, 105, topInfoY + 14);
+      doc.roundedRect(leftX, midY, leftW, midH, 6).fillColor('#F8FAFC').fill();
+      doc.roundedRect(leftX, midY, leftW, midH, 6).lineWidth(0.8).strokeColor('#E2E8F0').stroke();
 
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Kelas Asal', 35, topInfoY + 28);
-      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.kelas_nama || '-')}`, 105, topInfoY + 28);
+      // Header strip identitas
+      doc.roundedRect(leftX, midY, leftW, 20, 6).fillColor('#F1F5F9').fill();
+      doc.rect(leftX, midY + 10, leftW, 10).fillColor('#F1F5F9').fill();
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#1E293B').text('IDENTITAS LENGKAP PESERTA UJIAN', leftX + 10, midY + 5.5);
 
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('No. Peserta', 35, topInfoY + 42);
-      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#2563EB').text(`:  ${String(card.nomor_peserta || '-')}`, 105, topInfoY + 42);
+      // Baris Data Identitas Siswa
+      const labelX = leftX + 12;
+      const valueX = leftX + 115;
+      const startRowY = midY + 28;
+      const rowSpacing = 17.5;
 
-      // Kolom Kanan: Kotak Badge Ruang & Kursi Ujian
-      const badgeBoxX = 390;
-      const badgeBoxY = topInfoY - 4;
-      doc.roundedRect(badgeBoxX, badgeBoxY, 170, 56, 4).lineWidth(1).strokeColor('#93C5FD').fillColor('#EFF6FF').fillAndStroke();
+      // 1. Nomor Peserta
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Nomor Peserta', labelX, startRowY);
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#2563EB').text(`:  ${String(card.nomor_peserta || '-')}`, valueX, startRowY - 1);
 
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#1E40AF')
-        .text('LOKASI & NOMOR KURSI', badgeBoxX + 10, badgeBoxY + 6);
+      // 2. Nama Siswa
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Nama Siswa', labelX, startRowY + rowSpacing);
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.siswa_nama || '-')}`, valueX, startRowY + rowSpacing);
 
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#1E293B')
-        .text(String(card.ruangan || 'Ruang 01'), badgeBoxX + 10, badgeBoxY + 18);
+      // 3. NISN
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('NISN', labelX, startRowY + (rowSpacing * 2));
+      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.siswa_nisn || '-')}`, valueX, startRowY + (rowSpacing * 2));
 
-      doc.font('Helvetica').fontSize(7.5).fillColor('#475569')
-        .text('Nomor Meja/Kursi:', badgeBoxX + 10, badgeBoxY + 36);
+      // 4. Kelas / Rombel
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Kelas / Rombel', labelX, startRowY + (rowSpacing * 3));
+      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.kelas_nama || '-')}`, valueX, startRowY + (rowSpacing * 3));
 
-      // Badge Nomor Kursi Besar (Contoh: A1)
-      doc.roundedRect(badgeBoxX + 105, badgeBoxY + 14, 52, 34, 4).fillColor('#2563EB').fill();
-      doc.font('Helvetica-Bold').fontSize(18).fillColor('#FFFFFF')
-        .text(String(card.nomor_kursi || '-'), badgeBoxX + 105, badgeBoxY + 21, { width: 52, align: 'center' });
+      // 5. Tingkat Pendidikan
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Tingkat Kelas', labelX, startRowY + (rowSpacing * 4));
+      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  Tingkat ${String(card.tingkat || '-')}`, valueX, startRowY + (rowSpacing * 4));
 
-      // 4. TABEL JADWAL SESI MATA PELAJARAN SISWA
-      const tableTopY = 160;
-      const colWidths = { no: 24, tanggal: 95, jam: 70, mapel: 200, ruang: 75, paraf: 65 };
-      const startX = 35;
+      // 6. Status Peserta
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Status Validasi', labelX, startRowY + (rowSpacing * 5));
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#059669').text(':  TERDAFTAR & SAH SEBAGAI PESERTA', valueX, startRowY + (rowSpacing * 5));
 
-      // Header Tabel
-      doc.rect(startX, tableTopY, 525, 16).fillColor('#1E293B').fill();
-      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#FFFFFF');
-      doc.text('No', startX + 4, tableTopY + 4, { width: colWidths.no, align: 'center' });
-      doc.text('Hari, Tanggal', startX + 28, tableTopY + 4, { width: colWidths.tanggal });
-      doc.text('Waktu', startX + 125, tableTopY + 4, { width: colWidths.jam, align: 'center' });
-      doc.text('Mata Pelajaran', startX + 200, tableTopY + 4, { width: colWidths.mapel });
-      doc.text('Ruangan', startX + 395, tableTopY + 4, { width: colWidths.ruang, align: 'center' });
-      doc.text('Paraf', startX + 465, tableTopY + 4, { width: colWidths.paraf, align: 'center' });
+      // Kolom Kanan: Box Ruangan, Nomor Kursi & Pas Foto (Lebar: 175, Tinggi: 138)
+      const rightX = 390;
+      const rightW = 170;
 
-      const studentSchedule = scheduleByClass.get(card.kelas_id) || [];
-      let rowY = tableTopY + 16;
-      const maxRowsToShow = 6;
-      const displayRows = studentSchedule.slice(0, maxRowsToShow);
+      // Sub-box 1: Ruang & Nomor Meja Kursi (Tinggi: 74)
+      doc.roundedRect(rightX, midY, rightW, 74, 6).fillColor('#EFF6FF').lineWidth(0.8).strokeColor('#93C5FD').fillAndStroke();
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#1D4ED8').text('LOKASI & NOMOR MEJA', rightX + 10, midY + 8);
 
-      displayRows.forEach((item, idx) => {
-        const bg = idx % 2 === 1 ? '#F8FAFC' : '#FFFFFF';
-        doc.rect(startX, rowY, 525, 14).fillColor(bg).fill();
-        doc.rect(startX, rowY, 525, 14).lineWidth(0.5).strokeColor('#E2E8F0').stroke();
+      doc.font('Helvetica').fontSize(7).fillColor('#475569').text('Ruangan Ujian:', rightX + 10, midY + 23);
+      doc.font('Helvetica-Bold').fontSize(10).fillColor('#1E293B').text(String(card.ruangan || 'Ruang 01'), rightX + 10, midY + 34);
+      doc.font('Helvetica').fontSize(7).fillColor('#64748B').text('Nomor Kursi:', rightX + 10, midY + 52);
 
-        const [y, m, d] = String(item.tanggal).split('-');
-        const hariText = dayLabels[Number(item.hari)] || 'Hari';
-        const tglText = `${hariText}, ${d}/${m}/${y}`;
+      // Badge Nomor Kursi Besar
+      doc.roundedRect(rightX + 104, midY + 10, 56, 54, 5).fillColor('#2563EB').fill();
+      doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#DBEAFE').text('KURSI', rightX + 104, midY + 17, { width: 56, align: 'center' });
+      doc.font('Helvetica-Bold').fontSize(18).fillColor('#FFFFFF').text(String(card.nomor_kursi || '-'), rightX + 104, midY + 29, { width: 56, align: 'center' });
 
-        doc.font('Helvetica').fontSize(7).fillColor('#0F172A');
-        doc.text(String(idx + 1), startX + 4, rowY + 3.5, { width: colWidths.no, align: 'center' });
-        doc.text(tglText, startX + 28, rowY + 3.5, { width: colWidths.tanggal });
-        doc.text(`${item.jam_mulai} - ${item.jam_selesai}`, startX + 125, rowY + 3.5, { width: colWidths.jam, align: 'center' });
-        doc.font('Helvetica-Bold').text(String(item.mapel_nama || '-'), startX + 200, rowY + 3.5, { width: colWidths.mapel });
-        doc.font('Helvetica').text(String(card.ruangan || item.ruangan || '-'), startX + 395, rowY + 3.5, { width: colWidths.ruang, align: 'center' });
-        doc.text('.........', startX + 465, rowY + 3.5, { width: colWidths.paraf, align: 'center' });
+      // Sub-box 2: Pas Foto & Pengesahan (Tinggi: 58)
+      const fotoBoxY = midY + 80;
+      doc.roundedRect(rightX, fotoBoxY, rightW, 58, 6).fillColor('#FAFAFA').lineWidth(0.8).strokeColor('#E2E8F0').fillAndStroke();
 
-        rowY += 14;
-      });
+      // Placeholder Pas Foto 2x3 / 3x4
+      doc.rect(rightX + 10, fotoBoxY + 5, 38, 48).lineWidth(0.6).strokeColor('#94A3B8').dash(3, { space: 2 }).stroke();
+      doc.undash();
+      doc.font('Helvetica').fontSize(6).fillColor('#94A3B8').text('PAS FOTO\n2 x 3 / 3 x 4', rightX + 10, fotoBoxY + 19, { width: 38, align: 'center' });
 
-      if (studentSchedule.length > maxRowsToShow) {
-        doc.rect(startX, rowY, 525, 12).fillColor('#F1F5F9').fill();
-        doc.font('Helvetica-Oblique').fontSize(6.5).fillColor('#64748B')
-          .text(`... dan ${studentSchedule.length - maxRowsToShow} mata pelajaran lainnya sesuai jadwal resmi.`, startX + 10, rowY + 2.5);
-        rowY += 12;
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#1E293B').text('Kartu Identitas Resmi', rightX + 54, fotoBoxY + 10);
+      doc.font('Helvetica').fontSize(6.5).fillColor('#64748B').text('Wajib dibawa dan ditunjukkan kepada pengawas ujian pada setiap sesi.', rightX + 54, fotoBoxY + 22, { width: 108, lineGap: 1.5 });
+
+      // 5. BAGIAN BAWAH (TATA TERTIB & PENGESAHAN)
+      const botY = 249;
+      const botH = 138;
+
+      // Box Tata Tertib (Kiri: Lebar 345, Tinggi: 138)
+      doc.roundedRect(leftX, botY, leftW, botH, 6).fillColor('#F8FAFC').fill();
+      doc.roundedRect(leftX, botY, leftW, botH, 6).lineWidth(0.8).strokeColor('#E2E8F0').stroke();
+
+      doc.roundedRect(leftX, botY, leftW, 18, 6).fillColor('#F1F5F9').fill();
+      doc.rect(leftX, botY + 8, leftW, 10).fillColor('#F1F5F9').fill();
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#1E293B').text('TATA TERTIB & KETENTUAN PESERTA UJIAN', leftX + 10, botY + 5);
+
+      const rules = [
+        '1. Kartu tanda peserta ujian wajib dibawa dan diletakkan di atas meja selama ujian berlangsung.',
+        '2. Peserta hadir di ruang ujian selambat-lambatnya 15 menit sebelum waktu ujian dimulai.',
+        '3. Peserta wajib mengenakan seragam sekolah resmi, lengkap dengan atribut, dan bersepatu.',
+        '4. Dilarang membawa buku, catatan, kalkulator, maupun alat komunikasi (HP/gawai) ke ruang ujian.',
+        '5. Mengisi dan menandatangani daftar hadir ujian pada setiap sesi ujian yang diikuti.',
+        '6. Menjaga ketertiban, kejujuran, dan integritas penuh selama proses evaluasi/ujian berlangsung.',
+      ];
+
+      let ruleY = botY + 24;
+      for (const rule of rules) {
+        doc.font('Helvetica').fontSize(6.8).fillColor('#334155').text(rule, leftX + 10, ruleY, { width: leftW - 20, lineGap: 1 });
+        ruleY += 17.5;
       }
 
-      // 5. FOOTER: TATA TERTIB & TANDA TANGAN
-      const footerY = Math.max(rowY + 12, 280);
+      // Box Pengesahan (Kanan: Lebar 175, Tinggi: 138)
+      doc.roundedRect(rightX, botY, rightW, botH, 6).fillColor('#FFFFFF').fill();
+      doc.roundedRect(rightX, botY, rightW, botH, 6).lineWidth(0.8).strokeColor('#E2E8F0').stroke();
 
-      // Tata Tertib (Kiri)
-      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#0F172A').text('Tata Tertib Peserta Ujian:', 35, footerY);
-      doc.font('Helvetica').fontSize(6.5).fillColor('#475569');
-      doc.text('1. Kartu ujian wajib dibawa dan diletakkan di atas meja saat ujian.', 35, footerY + 11);
-      doc.text('2. Hadir di ruang ujian 15 menit sebelum ujian dimulai.', 35, footerY + 20);
-      doc.text('3. Membawa perlengkapan ujian sendiri dan berseragam rapi sesuai ketentuan.', 35, footerY + 29);
+      doc.font('Helvetica').fontSize(7).fillColor('#475569')
+        .text(formatTgl(ujian.tanggal_mulai || new Date()), rightX, botY + 12, { align: 'center', width: rightW });
 
-      // Tanda Tangan (Kanan)
-      const signX = 400;
-      doc.font('Helvetica').fontSize(7.5).fillColor('#475569')
-        .text('Panitia Pelaksana Ujian,', signX, footerY, { align: 'center', width: 155 });
-      doc.font('Helvetica-Bold').fontSize(8).fillColor('#0F172A')
-        .text('Kepala Sekolah / Ketua Panitia', signX, footerY + 42, { align: 'center', width: 155 });
-      doc.moveTo(signX + 15, footerY + 40).lineTo(signX + 140, footerY + 40).lineWidth(0.5).strokeColor('#CBD5E1').stroke();
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#0F172A')
+        .text('Kepala Sekolah / Ketua Panitia,', rightX, botY + 24, { align: 'center', width: rightW });
+
+      // Garis tanda tangan
+      doc.moveTo(rightX + 18, botY + 98).lineTo(rightX + rightW - 18, botY + 98).lineWidth(0.6).strokeColor('#CBD5E1').stroke();
+
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#0F172A')
+        .text('( .................................................. )', rightX, botY + 103, { align: 'center', width: rightW });
+
+      doc.font('Helvetica').fontSize(6.5).fillColor('#64748B')
+        .text('NIP. -', rightX, botY + 116, { align: 'center', width: rightW });
+
+      // 6. CATATAN KAKI / VERIFIKASI DOKUMEN
+      doc.font('Helvetica').fontSize(6).fillColor('#94A3B8')
+        .text(`Verifikasi Dokumen: ${card.nomor_peserta}  •  Sistem Absensi & Informasi Akademik Terintegrasi`, 35, 393);
     }
 
     doc.end();
