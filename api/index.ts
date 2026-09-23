@@ -7,12 +7,16 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 const server: Express = express();
+server.use(express.json({ limit: '50mb' }));
+server.use(express.urlencoded({ limit: '50mb', extended: true }));
 let isReady = false;
 
 async function bootstrap() {
   if (isReady) return;
 
-  const app = await NestFactory.create(AppModule, new ExpressAdapter(server));
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(server), {
+    bodyParser: false,
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({

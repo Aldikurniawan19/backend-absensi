@@ -7,7 +7,7 @@ import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
   const logger = new Logger('Bootstrap');
 
   // Tingkatkan batas ukuran body payload (misal untuk batch jadwal ujian & upload file)
