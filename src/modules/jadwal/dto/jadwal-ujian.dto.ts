@@ -216,3 +216,20 @@ export class ToggleJadwalUjianStatusDto {
   @IsBoolean()
   is_active!: boolean;
 }
+
+export class GenerateKartuUjianDto {
+  @ApiPropertyOptional({ example: 20, description: 'Kapasitas maksimal siswa per ruangan ujian' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  kapasitas_ruangan?: number = 20;
+
+  @ApiPropertyOptional({ example: 4, description: 'Jumlah kolom kursi per baris (misal 4 -> A1..A4, B1..B4)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  kolom_per_baris?: number = 4;
+}
+

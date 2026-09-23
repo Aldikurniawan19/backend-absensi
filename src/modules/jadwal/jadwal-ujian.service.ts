@@ -7,11 +7,13 @@ import {
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import * as crypto from 'crypto';
+import PDFDocument from 'pdfkit';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import {
   CreateJadwalUjianDto,
   GenerateJadwalUjianDto,
+  GenerateKartuUjianDto,
 } from './dto/jadwal-ujian.dto';
 
 export interface JadwalUjianRecord {
@@ -47,6 +49,22 @@ export interface JadwalUjianItemRecord {
   kelas_nama?: string;
 }
 
+export interface KartuUjianRecord {
+  id: string;
+  jadwal_ujian_id: string;
+  siswa_id: string;
+  kelas_id: string;
+  ruangan: string;
+  nomor_kursi: string;
+  nomor_peserta: string;
+  createdAt: string;
+  updatedAt: string;
+  siswa_nama?: string;
+  siswa_nisn?: string;
+  kelas_nama?: string;
+  tingkat?: number;
+}
+
 @Injectable()
 export class JadwalUjianService implements OnModuleInit {
   constructor(
@@ -59,7 +77,7 @@ export class JadwalUjianService implements OnModuleInit {
   }
 
   /**
-   * Inisialisasi tabel basis data Jadwal Ujian pada PostgreSQL
+   * Inisialisasi tabel basis data Jadwal Ujian & Kartu Ujian pada PostgreSQL
    */
   private async initDatabaseTables() {
     try {
@@ -96,15 +114,35 @@ export class JadwalUjianService implements OnModuleInit {
       `);
 
       await this.prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "kartu_ujian" (
+          "id" TEXT PRIMARY KEY,
+          "jadwal_ujian_id" TEXT NOT NULL,
+          "siswa_id" TEXT NOT NULL,
+          "kelas_id" TEXT NOT NULL,
+          "ruangan" TEXT NOT NULL,
+          "nomor_kursi" TEXT NOT NULL,
+          "nomor_peserta" TEXT NOT NULL,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "uq_kartu_ujian_jadwal_siswa" UNIQUE ("jadwal_ujian_id", "siswa_id")
+        );
+      `);
+
+      await this.prisma.$executeRawUnsafe(`
         CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_sekolah" ON "jadwal_ujian"("sekolah_id", "is_active");
         CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_item_parent" ON "jadwal_ujian_item"("jadwal_ujian_id");
         CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_item_kelas" ON "jadwal_ujian_item"("kelas_id", "tanggal");
         CREATE INDEX IF NOT EXISTS "idx_jadwal_ujian_item_guru" ON "jadwal_ujian_item"("guru_id", "tanggal");
+        CREATE INDEX IF NOT EXISTS "idx_kartu_ujian_jadwal" ON "kartu_ujian"("jadwal_ujian_id");
+        CREATE INDEX IF NOT EXISTS "idx_kartu_ujian_siswa" ON "kartu_ujian"("siswa_id");
+        CREATE INDEX IF NOT EXISTS "idx_kartu_ujian_ruangan" ON "kartu_ujian"("jadwal_ujian_id", "ruangan");
+        CREATE INDEX IF NOT EXISTS "idx_kartu_ujian_kelas" ON "kartu_ujian"("jadwal_ujian_id", "kelas_id");
       `);
     } catch (err) {
-      console.warn('Inisialisasi tabel jadwal_ujian selesai / menggunakan schema eksisting:', err);
+      console.warn('Inisialisasi tabel jadwal_ujian/kartu_ujian selesai / menggunakan schema eksisting:', err);
     }
   }
+
 
   /**
    * Mengambil daftar seluruh jadwal ujian untuk sekolah/tahun ajaran
@@ -715,6 +753,7 @@ export class JadwalUjianService implements OnModuleInit {
 
     await this.prisma.$transaction(
       async (tx) => {
+        await tx.$executeRawUnsafe(`DELETE FROM "kartu_ujian" WHERE "jadwal_ujian_id" = $1`, id);
         await tx.$executeRawUnsafe(`DELETE FROM "jadwal_ujian_item" WHERE "jadwal_ujian_id" = $1`, id);
         await tx.$executeRawUnsafe(`DELETE FROM "jadwal_ujian" WHERE "id" = $1`, id);
       },
@@ -739,4 +778,826 @@ export class JadwalUjianService implements OnModuleInit {
       message: `Jadwal ujian "${existing[0].nama_ujian}" berhasil dihapus.`,
     };
   }
+
+  // =========================================================================
+  // FITUR KARTU UJIAN & PEMBAGIAN RUANG / KURSI
+  // =========================================================================
+
+  /**
+   * Men-generate / menambahkan Kartu Ujian, Ruang Ujian, dan Nomor Kursi
+   * Sesuai aturan:
+   * 1. Urut mulai dari Kelas 10, 11, 12 (kemudian nama rombel & nama siswa)
+   * 2. Kapasitas ruangan default 20 peserta per ruangan
+   * 3. Jika ruangan penuh (20 peserta), sisa siswa lanjut ke ruangan berikutnya
+   * 4. Format nomor kursi: A1, A2, A3, A4, B1, B2... (baris + kolom)
+   * 5. Bersifat aditif (hanya menambahkan siswa yang belum punya nomor, tanpa mereset nomor yang ada)
+   */
+  async generateKartuUjian(
+    jadwalUjianId: string,
+    sekolahId: string,
+    actorId: string,
+    dto: GenerateKartuUjianDto = {},
+  ) {
+    const kapasitasRuangan = Math.max(1, Number(dto.kapasitas_ruangan) || 20);
+    const kolomPerBaris = Math.max(1, Number(dto.kolom_per_baris) || 4);
+
+    const ujianRows = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT u.*, t.nama as tahun_ajaran_nama, t.semester as tahun_ajaran_semester
+      FROM "jadwal_ujian" u
+      LEFT JOIN "tahun_ajaran" t ON u.tahun_ajaran_id = t.id
+      WHERE u.id = $1 AND u.sekolah_id = $2
+      LIMIT 1
+      `,
+      jadwalUjianId,
+      sekolahId,
+    );
+
+    if (!ujianRows || ujianRows.length === 0) {
+      throw new NotFoundException('Jadwal ujian tidak ditemukan');
+    }
+
+    const ujian = ujianRows[0];
+
+    // 1. Ambil seluruh kelas yang terdaftar pada jadwal ujian ini
+    const examClasses = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT DISTINCT k.id as kelas_id, k.tingkat, k.nama_rombel, j.kode as jurusan_kode
+      FROM "jadwal_ujian_item" i
+      JOIN "kelas" k ON i.kelas_id = k.id
+      JOIN "jurusan" j ON k.jurusan_id = j.id
+      WHERE i.jadwal_ujian_id = $1
+      ORDER BY k.tingkat ASC, j.kode ASC, k.nama_rombel ASC
+      `,
+      jadwalUjianId,
+    );
+
+    if (examClasses.length === 0) {
+      throw new BadRequestException('Jadwal ujian belum memiliki sesi mata pelajaran atau kelas target.');
+    }
+
+    const classIds = examClasses.map((c) => c.kelas_id);
+
+    // 2. Ambil seluruh siswa aktif yang terdaftar di kelas-kelas tersebut untuk tahun ajaran ujian
+    const students = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT s.id as siswa_id, s.nama as siswa_nama, s.nisn as siswa_nisn,
+             k.id as kelas_id, k.tingkat, k.nama_rombel, j.kode as jurusan_kode,
+             CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+      FROM "riwayat_kelas_siswa" rks
+      JOIN "siswa" s ON rks.siswa_id = s.id
+      JOIN "kelas" k ON rks.kelas_id = k.id
+      JOIN "jurusan" j ON k.jurusan_id = j.id
+      WHERE rks.tahun_ajaran_id = $1 AND rks.kelas_id = ANY($2::text[])
+      ORDER BY k.tingkat ASC, j.kode ASC, k.nama_rombel ASC, s.nama ASC
+      `,
+      ujian.tahun_ajaran_id,
+      classIds,
+    );
+
+    if (students.length === 0) {
+      throw new BadRequestException('Tidak ditemukan siswa terdaftar pada kelas-kelas jadwal ujian ini.');
+    }
+
+    // 3. Cek kartu ujian yang sudah ada (existing)
+    const existingCards = await this.prisma.$queryRawUnsafe<any[]>(
+      `SELECT id, siswa_id, ruangan, nomor_kursi, nomor_peserta FROM "kartu_ujian" WHERE "jadwal_ujian_id" = $1 ORDER BY "ruangan" ASC, "nomor_kursi" ASC`,
+      jadwalUjianId,
+    );
+
+    const existingSiswaIdSet = new Set<string>(existingCards.map((c) => c.siswa_id));
+    const unassignedStudents = students.filter((s) => !existingSiswaIdSet.has(s.siswa_id));
+
+    if (unassignedStudents.length === 0) {
+      return {
+        success: true,
+        message: `Seluruh peserta (${existingCards.length} siswa) telah memiliki nomor kartu & kursi ujian.`,
+        total_peserta: existingCards.length,
+        newly_added: 0,
+        total_ruangan: new Set(existingCards.map((c) => c.ruangan)).size,
+      };
+    }
+
+    // 4. Hitung posisi ruangan dan kursi selanjutnya
+    let nextRoomNumber = 1;
+    let currentSeatIndex = 0;
+
+    if (existingCards.length > 0) {
+      const roomOccupancy = new Map<number, number>();
+      for (const card of existingCards) {
+        const match = String(card.ruangan).match(/(\d+)/);
+        const rNum = match ? parseInt(match[1], 10) : 1;
+        roomOccupancy.set(rNum, (roomOccupancy.get(rNum) || 0) + 1);
+      }
+      const maxRoom = Math.max(...Array.from(roomOccupancy.keys()), 1);
+      const occupiedInMaxRoom = roomOccupancy.get(maxRoom) || 0;
+
+      if (occupiedInMaxRoom < kapasitasRuangan) {
+        nextRoomNumber = maxRoom;
+        currentSeatIndex = occupiedInMaxRoom;
+      } else {
+        nextRoomNumber = maxRoom + 1;
+        currentSeatIndex = 0;
+      }
+    }
+
+    // Helper format kursi: A1, A2, A3, A4, B1, B2...
+    const formatSeat = (seatIdx: number, cols: number): string => {
+      const rowLetter = String.fromCharCode(65 + Math.floor(seatIdx / cols));
+      const colNum = (seatIdx % cols) + 1;
+      return `${rowLetter}${colNum}`;
+    };
+
+    const newCardsToInsert: Array<{
+      id: string;
+      jadwal_ujian_id: string;
+      siswa_id: string;
+      kelas_id: string;
+      ruangan: string;
+      nomor_kursi: string;
+      nomor_peserta: string;
+    }> = [];
+
+    for (const student of unassignedStudents) {
+      if (currentSeatIndex >= kapasitasRuangan) {
+        nextRoomNumber++;
+        currentSeatIndex = 0;
+      }
+
+      const roomName = `Ruang ${String(nextRoomNumber).padStart(2, '0')}`;
+      const seatName = formatSeat(currentSeatIndex, kolomPerBaris);
+      const pesertaCode = `${ujian.jenis || 'UJN'}-${String(nextRoomNumber).padStart(2, '0')}-${seatName}`;
+
+      newCardsToInsert.push({
+        id: crypto.randomUUID(),
+        jadwal_ujian_id: jadwalUjianId,
+        siswa_id: student.siswa_id,
+        kelas_id: student.kelas_id,
+        ruangan: roomName,
+        nomor_kursi: seatName,
+        nomor_peserta: pesertaCode,
+      });
+
+      currentSeatIndex++;
+    }
+
+    // 5. Batch insert kartu ujian baru (chunk 100 baris per query)
+    const chunkSize = 100;
+    for (let i = 0; i < newCardsToInsert.length; i += chunkSize) {
+      const chunk = newCardsToInsert.slice(i, i + chunkSize);
+      const placeholders: string[] = [];
+      const params: any[] = [];
+      let pIdx = 1;
+
+      for (const card of chunk) {
+        placeholders.push(
+          `($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, $${pIdx + 4}, $${pIdx + 5}, $${pIdx + 6}, NOW(), NOW())`,
+        );
+        params.push(
+          card.id,
+          card.jadwal_ujian_id,
+          card.siswa_id,
+          card.kelas_id,
+          card.ruangan,
+          card.nomor_kursi,
+          card.nomor_peserta,
+        );
+        pIdx += 7;
+      }
+
+      const insertSql = `
+        INSERT INTO "kartu_ujian" (
+          "id", "jadwal_ujian_id", "siswa_id", "kelas_id", "ruangan", "nomor_kursi", "nomor_peserta", "createdAt", "updatedAt"
+        ) VALUES ${placeholders.join(', ')}
+        ON CONFLICT ("jadwal_ujian_id", "siswa_id") DO NOTHING
+      `;
+
+      await this.prisma.$executeRawUnsafe(insertSql, ...params);
+    }
+
+    const totalPeserta = existingCards.length + newCardsToInsert.length;
+    const allRoomsCount = nextRoomNumber;
+
+    await this.auditService.log({
+      sekolah_id: sekolahId,
+      actor_id: actorId,
+      actor_type: UserRole.ADMIN,
+      action: 'GENERATE_KARTU_UJIAN',
+      resource: 'KARTU_UJIAN',
+      resource_id: jadwalUjianId,
+      details: `Men-generate kartu ujian ${ujian.nama_ujian}: ${newCardsToInsert.length} siswa baru dialokasikan ke ${allRoomsCount} ruangan (kapasitas ${kapasitasRuangan}/ruang). Total ${totalPeserta} peserta.`,
+    });
+
+    return {
+      success: true,
+      message: `Berhasil men-generate kartu ujian. ${newCardsToInsert.length} siswa baru dialokasikan ke ${allRoomsCount} ruangan.`,
+      total_peserta: totalPeserta,
+      newly_added: newCardsToInsert.length,
+      total_ruangan: allRoomsCount,
+    };
+  }
+
+  /**
+   * Mengambil daftar kartu ujian terpaginasi dengan filter ruangan, kelas, atau pencarian nama/nisn
+   */
+  async getKartuUjianList(
+    jadwalUjianId: string,
+    sekolahId: string,
+    page: number = 1,
+    limit: number = 20,
+    ruangan?: string,
+    kelasId?: string,
+    search?: string,
+  ) {
+    let whereClause = `WHERE ku.jadwal_ujian_id = $1 AND u.sekolah_id = $2`;
+    const params: any[] = [jadwalUjianId, sekolahId];
+    let paramIndex = 3;
+
+    if (ruangan && ruangan !== 'ALL') {
+      whereClause += ` AND ku.ruangan = $${paramIndex}`;
+      params.push(ruangan);
+      paramIndex++;
+    }
+
+    if (kelasId && kelasId !== 'ALL') {
+      whereClause += ` AND ku.kelas_id = $${paramIndex}`;
+      params.push(kelasId);
+      paramIndex++;
+    }
+
+    if (search && search.trim() !== '') {
+      const searchPattern = `%${search.trim()}%`;
+      whereClause += ` AND (s.nama ILIKE $${paramIndex} OR s.nisn ILIKE $${paramIndex} OR ku.nomor_peserta ILIKE $${paramIndex} OR ku.nomor_kursi ILIKE $${paramIndex})`;
+      params.push(searchPattern);
+      paramIndex++;
+    }
+
+    // Count query
+    const countQuery = `
+      SELECT COUNT(ku.id)::int as total
+      FROM "kartu_ujian" ku
+      JOIN "jadwal_ujian" u ON ku.jadwal_ujian_id = u.id
+      JOIN "siswa" s ON ku.siswa_id = s.id
+      JOIN "kelas" k ON ku.kelas_id = k.id
+      ${whereClause}
+    `;
+
+    const countResult = await this.prisma.$queryRawUnsafe<Array<{ total: number }>>(
+      countQuery,
+      ...params,
+    );
+    const total = Number(countResult[0]?.total || 0);
+
+    const safeLimit = Math.max(1, Math.min(100, limit));
+    const safePage = Math.max(1, page);
+    const offset = (safePage - 1) * safeLimit;
+
+    const dataParams = [...params, safeLimit, offset];
+    const dataQuery = `
+      SELECT 
+        ku.id, ku.jadwal_ujian_id, ku.siswa_id, ku.kelas_id, ku.ruangan,
+        ku.nomor_kursi, ku.nomor_peserta, ku."createdAt",
+        s.nama as siswa_nama, s.nisn as siswa_nisn,
+        k.tingkat,
+        CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+      FROM "kartu_ujian" ku
+      JOIN "jadwal_ujian" u ON ku.jadwal_ujian_id = u.id
+      JOIN "siswa" s ON ku.siswa_id = s.id
+      JOIN "kelas" k ON ku.kelas_id = k.id
+      JOIN "jurusan" j ON k.jurusan_id = j.id
+      ${whereClause}
+      ORDER BY ku.ruangan ASC, ku.nomor_kursi ASC, s.nama ASC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+
+    const items = await this.prisma.$queryRawUnsafe<any[]>(dataQuery, ...dataParams);
+
+    return {
+      items,
+      meta: {
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: Math.ceil(total / safeLimit) || 1,
+      },
+    };
+  }
+
+  /**
+   * Mengambil ringkasan data kartu ujian (daftar ruangan, jumlah peserta, dsb)
+   */
+  async getKartuUjianSummary(jadwalUjianId: string, sekolahId: string) {
+    const summaryRows = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT 
+        ku.ruangan,
+        COUNT(ku.id)::int as total_siswa,
+        COUNT(DISTINCT ku.kelas_id)::int as total_kelas
+      FROM "kartu_ujian" ku
+      JOIN "jadwal_ujian" u ON ku.jadwal_ujian_id = u.id
+      WHERE ku.jadwal_ujian_id = $1 AND u.sekolah_id = $2
+      GROUP BY ku.ruangan
+      ORDER BY ku.ruangan ASC
+      `,
+      jadwalUjianId,
+      sekolahId,
+    );
+
+    const totalPeserta = summaryRows.reduce((acc, r) => acc + Number(r.total_siswa || 0), 0);
+
+    return {
+      jadwal_ujian_id: jadwalUjianId,
+      total_peserta: totalPeserta,
+      total_ruangan: summaryRows.length,
+      ruangan_list: summaryRows.map((r) => ({
+        ruangan: r.ruangan,
+        total_siswa: Number(r.total_siswa || 0),
+        total_kelas: Number(r.total_kelas || 0),
+      })),
+    };
+  }
+
+  /**
+   * Reset / Hapus seluruh Kartu Ujian untuk jadwal ujian tertentu
+   */
+  async deleteKartuUjian(jadwalUjianId: string, sekolahId: string, actorId: string) {
+    const ujianRows = await this.prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM "jadwal_ujian" WHERE "id" = $1 AND "sekolah_id" = $2 LIMIT 1`,
+      jadwalUjianId,
+      sekolahId,
+    );
+
+    if (!ujianRows || ujianRows.length === 0) {
+      throw new NotFoundException('Jadwal ujian tidak ditemukan');
+    }
+
+    await this.prisma.$executeRawUnsafe(
+      `DELETE FROM "kartu_ujian" WHERE "jadwal_ujian_id" = $1`,
+      jadwalUjianId,
+    );
+
+    await this.auditService.log({
+      sekolah_id: sekolahId,
+      actor_id: actorId,
+      actor_type: UserRole.ADMIN,
+      action: 'RESET_KARTU_UJIAN',
+      resource: 'KARTU_UJIAN',
+      resource_id: jadwalUjianId,
+      details: `Mereset nomor kursi dan kartu ujian untuk jadwal ${ujianRows[0].nama_ujian}`,
+    });
+
+    return {
+      success: true,
+      message: 'Kartu ujian dan alokasi nomor kursi berhasil direset.',
+    };
+  }
+
+  /**
+   * Men-generate Dokumen PDF Kartu Ujian Siswa (A5 Landscape)
+   */
+  async generateKartuUjianPdf(
+    jadwalUjianId: string,
+    sekolahId: string,
+    siswaId?: string,
+    ruangan?: string,
+    kelasId?: string,
+  ): Promise<Buffer> {
+    const ujianRows = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT u.*, t.nama as tahun_ajaran_nama, t.semester as tahun_ajaran_semester,
+             s.nama as sekolah_nama, s.npsn as sekolah_npsn, s.alamat as sekolah_alamat
+      FROM "jadwal_ujian" u
+      LEFT JOIN "tahun_ajaran" t ON u.tahun_ajaran_id = t.id
+      LEFT JOIN "sekolah" s ON u.sekolah_id = s.id
+      WHERE u.id = $1 AND u.sekolah_id = $2
+      LIMIT 1
+      `,
+      jadwalUjianId,
+      sekolahId,
+    );
+
+    if (!ujianRows || ujianRows.length === 0) {
+      throw new NotFoundException('Jadwal ujian tidak ditemukan');
+    }
+
+    const ujian = ujianRows[0];
+
+    // Filter siswa yang akan dibuatkan PDF
+    let queryKartu = `
+      SELECT 
+        ku.id, ku.jadwal_ujian_id, ku.siswa_id, ku.kelas_id, ku.ruangan,
+        ku.nomor_kursi, ku.nomor_peserta,
+        s.nama as siswa_nama, s.nisn as siswa_nisn,
+        k.tingkat,
+        CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+      FROM "kartu_ujian" ku
+      JOIN "siswa" s ON ku.siswa_id = s.id
+      JOIN "kelas" k ON ku.kelas_id = k.id
+      JOIN "jurusan" j ON k.jurusan_id = j.id
+      WHERE ku.jadwal_ujian_id = $1
+    `;
+    const params: any[] = [jadwalUjianId];
+    let pIdx = 2;
+
+    if (siswaId) {
+      queryKartu += ` AND ku.siswa_id = $${pIdx}`;
+      params.push(siswaId);
+      pIdx++;
+    } else {
+      if (ruangan && ruangan !== 'ALL') {
+        queryKartu += ` AND ku.ruangan = $${pIdx}`;
+        params.push(ruangan);
+        pIdx++;
+      }
+      if (kelasId && kelasId !== 'ALL') {
+        queryKartu += ` AND ku.kelas_id = $${pIdx}`;
+        params.push(kelasId);
+        pIdx++;
+      }
+    }
+
+    queryKartu += ` ORDER BY ku.ruangan ASC, ku.nomor_kursi ASC, s.nama ASC`;
+
+    const cards = await this.prisma.$queryRawUnsafe<any[]>(queryKartu, ...params);
+
+    if (cards.length === 0) {
+      throw new NotFoundException('Belum ada kartu ujian ter-generate untuk kriteria yang dipilih.');
+    }
+
+    // Ambil seluruh jadwal ujian item untuk mapping jadwal per kelas
+    const scheduleItems = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT 
+        i.kelas_id,
+        TO_CHAR(i.tanggal, 'YYYY-MM-DD') as tanggal,
+        i.hari, i.jam_mulai, i.jam_selesai, i.ruangan,
+        m.nama as mapel_nama, m.kode as mapel_kode
+      FROM "jadwal_ujian_item" i
+      JOIN "mata_pelajaran" m ON i.mapel_id = m.id
+      WHERE i.jadwal_ujian_id = $1
+      ORDER BY i.tanggal ASC, i.jam_mulai ASC
+      `,
+      jadwalUjianId,
+    );
+
+    const scheduleByClass = new Map<string, any[]>();
+    for (const item of scheduleItems) {
+      const list = scheduleByClass.get(item.kelas_id) || [];
+      list.push(item);
+      scheduleByClass.set(item.kelas_id, list);
+    }
+
+    const doc = new PDFDocument({
+      size: 'A5',
+      layout: 'landscape',
+      margin: 25,
+      autoFirstPage: false,
+    });
+
+    const bufferPromise = new Promise<Buffer>((resolve, reject) => {
+      const buffers: Buffer[] = [];
+      doc.on('data', (chunk: Buffer) => buffers.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
+      doc.on('error', (err: any) => reject(err));
+    });
+
+    const dayLabels: Record<number, string> = {
+      1: 'Senin',
+      2: 'Selasa',
+      3: 'Rabu',
+      4: 'Kamis',
+      5: 'Jumat',
+      6: 'Sabtu',
+      7: 'Minggu',
+    };
+
+    for (const card of cards) {
+      doc.addPage({ size: 'A5', layout: 'landscape', margin: 25 });
+
+      // Lebar halaman A5 landscape = 595.28 pt, tinggi = 419.53 pt
+      // Border kartu luar (stroke rapi)
+      doc.rect(20, 15, 555, 390).lineWidth(1).strokeColor('#CBD5E1').stroke();
+
+      // 1. KOP SURAT SEKOLAH
+      doc.font('Helvetica-Bold').fontSize(12).fillColor('#0F172A')
+        .text((ujian.sekolah_nama || 'SEKOLAH MENENGAH ATAS').toUpperCase(), 25, 25, { align: 'center' });
+
+      doc.font('Helvetica').fontSize(7.5).fillColor('#64748B')
+        .text(
+          `NPSN: ${ujian.sekolah_npsn || '-'} • Alamat: ${ujian.sekolah_alamat || 'Indonesia'}`,
+          25,
+          41,
+          { align: 'center' },
+        );
+
+      // Garis ganda pembatas KOP
+      doc.moveTo(35, 54).lineTo(560, 54).lineWidth(1.5).strokeColor('#1E293B').stroke();
+      doc.moveTo(35, 57).lineTo(560, 57).lineWidth(0.5).strokeColor('#94A3B8').stroke();
+
+      // 2. JUDUL KARTU
+      doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#0F172A')
+        .text('KARTU TANDA PESERTA UJIAN', 25, 64, { align: 'center' });
+
+      doc.font('Helvetica').fontSize(8).fillColor('#475569')
+        .text(
+          `${ujian.nama_ujian} • Tahun Ajaran ${ujian.tahun_ajaran_nama || ''} (${ujian.tahun_ajaran_semester || ''})`,
+          25,
+          77,
+          { align: 'center' },
+        );
+
+      // 3. INFORMASI SISWA & RUANG UJIAN (DUA KOLOM)
+      // Kolom Kiri: Biodata Siswa
+      const topInfoY = 94;
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Nama Peserta', 35, topInfoY);
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#0F172A').text(`:  ${card.siswa_nama}`, 105, topInfoY);
+
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('NISN', 35, topInfoY + 14);
+      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${card.siswa_nisn}`, 105, topInfoY + 14);
+
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Kelas Asal', 35, topInfoY + 28);
+      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${card.kelas_nama}`, 105, topInfoY + 28);
+
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('No. Peserta', 35, topInfoY + 42);
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#2563EB').text(`:  ${card.nomor_peserta}`, 105, topInfoY + 42);
+
+      // Kolom Kanan: Kotak Badge Ruang & Kursi Ujian
+      const badgeBoxX = 390;
+      const badgeBoxY = topInfoY - 4;
+      doc.roundedRect(badgeBoxX, badgeBoxY, 170, 56, 4).lineWidth(1).strokeColor('#93C5FD').fillColor('#EFF6FF').fillAndStroke();
+
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#1E40AF')
+        .text('LOKASI & NOMOR KURSI', badgeBoxX + 10, badgeBoxY + 6);
+
+      doc.font('Helvetica-Bold').fontSize(10).fillColor('#1E293B')
+        .text(card.ruangan || 'Ruang 01', badgeBoxX + 10, badgeBoxY + 18);
+
+      doc.font('Helvetica').fontSize(7.5).fillColor('#475569')
+        .text('Nomor Meja/Kursi:', badgeBoxX + 10, badgeBoxY + 36);
+
+      // Badge Nomor Kursi Besar (Contoh: A1)
+      doc.roundedRect(badgeBoxX + 105, badgeBoxY + 14, 52, 34, 4).fillColor('#2563EB').fill();
+      doc.font('Helvetica-Bold').fontSize(18).fillColor('#FFFFFF')
+        .text(card.nomor_kursi, badgeBoxX + 105, badgeBoxY + 21, { width: 52, align: 'center' });
+
+      // 4. TABEL JADWAL SESI MATA PELAJARAN SISWA
+      const tableTopY = 160;
+      const colWidths = { no: 24, tanggal: 95, jam: 70, mapel: 200, ruang: 75, paraf: 65 };
+      const startX = 35;
+
+      // Header Tabel
+      doc.rect(startX, tableTopY, 525, 16).fillColor('#1E293B').fill();
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#FFFFFF');
+      doc.text('No', startX + 4, tableTopY + 4, { width: colWidths.no, align: 'center' });
+      doc.text('Hari, Tanggal', startX + 28, tableTopY + 4, { width: colWidths.tanggal });
+      doc.text('Waktu', startX + 125, tableTopY + 4, { width: colWidths.jam, align: 'center' });
+      doc.text('Mata Pelajaran', startX + 200, tableTopY + 4, { width: colWidths.mapel });
+      doc.text('Ruangan', startX + 395, tableTopY + 4, { width: colWidths.ruang, align: 'center' });
+      doc.text('Paraf', startX + 465, tableTopY + 4, { width: colWidths.paraf, align: 'center' });
+
+      const studentSchedule = scheduleByClass.get(card.kelas_id) || [];
+      let rowY = tableTopY + 16;
+      const maxRowsToShow = 6;
+      const displayRows = studentSchedule.slice(0, maxRowsToShow);
+
+      displayRows.forEach((item, idx) => {
+        const bg = idx % 2 === 1 ? '#F8FAFC' : '#FFFFFF';
+        doc.rect(startX, rowY, 525, 14).fillColor(bg).fill();
+        doc.rect(startX, rowY, 525, 14).lineWidth(0.5).strokeColor('#E2E8F0').stroke();
+
+        const [y, m, d] = String(item.tanggal).split('-');
+        const hariText = dayLabels[Number(item.hari)] || 'Hari';
+        const tglText = `${hariText}, ${d}/${m}/${y}`;
+
+        doc.font('Helvetica').fontSize(7).fillColor('#0F172A');
+        doc.text(String(idx + 1), startX + 4, rowY + 3.5, { width: colWidths.no, align: 'center' });
+        doc.text(tglText, startX + 28, rowY + 3.5, { width: colWidths.tanggal });
+        doc.text(`${item.jam_mulai} - ${item.jam_selesai}`, startX + 125, rowY + 3.5, { width: colWidths.jam, align: 'center' });
+        doc.font('Helvetica-Bold').text(item.mapel_nama, startX + 200, rowY + 3.5, { width: colWidths.mapel });
+        doc.font('Helvetica').text(card.ruangan || item.ruangan || '-', startX + 395, rowY + 3.5, { width: colWidths.ruang, align: 'center' });
+        doc.text('.........', startX + 465, rowY + 3.5, { width: colWidths.paraf, align: 'center' });
+
+        rowY += 14;
+      });
+
+      if (studentSchedule.length > maxRowsToShow) {
+        doc.rect(startX, rowY, 525, 12).fillColor('#F1F5F9').fill();
+        doc.font('Helvetica-Oblique').fontSize(6.5).fillColor('#64748B')
+          .text(`... dan ${studentSchedule.length - maxRowsToShow} mata pelajaran lainnya sesuai jadwal resmi.`, startX + 10, rowY + 2.5);
+        rowY += 12;
+      }
+
+      // 5. FOOTER: TATA TERTIB & TANDA TANGAN
+      const footerY = Math.max(rowY + 12, 280);
+
+      // Tata Tertib (Kiri)
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#0F172A').text('Tata Tertib Peserta Ujian:', 35, footerY);
+      doc.font('Helvetica').fontSize(6.5).fillColor('#475569');
+      doc.text('1. Kartu ujian wajib dibawa dan diletakkan di atas meja saat ujian.', 35, footerY + 11);
+      doc.text('2. Hadir di ruang ujian 15 menit sebelum ujian dimulai.', 35, footerY + 20);
+      doc.text('3. Membawa perlengkapan ujian sendiri dan berseragam rapi sesuai ketentuan.', 35, footerY + 29);
+
+      // Tanda Tangan (Kanan)
+      const signX = 400;
+      doc.font('Helvetica').fontSize(7.5).fillColor('#475569')
+        .text('Panitia Pelaksana Ujian,', signX, footerY, { align: 'center', width: 155 });
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#0F172A')
+        .text('Kepala Sekolah / Ketua Panitia', signX, footerY + 42, { align: 'center', width: 155 });
+      doc.moveTo(signX + 15, footerY + 40).lineTo(signX + 140, footerY + 40).lineWidth(0.5).strokeColor('#CBD5E1').stroke();
+    }
+
+    doc.end();
+    return bufferPromise;
+  }
+
+  /**
+   * Men-generate Dokumen PDF Label Meja / Denah Kursi untuk Ditempel pada Tiap Bangku (A4)
+   * 1 Lembar A4 memuat 6 kartu label berukuran pas (~9 cm x 8.5 cm) lengkap dengan garis potong
+   */
+  async generateDenahKursiPdf(
+    jadwalUjianId: string,
+    sekolahId: string,
+    ruangan?: string,
+  ): Promise<Buffer> {
+    const ujianRows = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT u.*, t.nama as tahun_ajaran_nama, t.semester as tahun_ajaran_semester,
+             s.nama as sekolah_nama, s.npsn as sekolah_npsn
+      FROM "jadwal_ujian" u
+      LEFT JOIN "tahun_ajaran" t ON u.tahun_ajaran_id = t.id
+      LEFT JOIN "sekolah" s ON u.sekolah_id = s.id
+      WHERE u.id = $1 AND u.sekolah_id = $2
+      LIMIT 1
+      `,
+      jadwalUjianId,
+      sekolahId,
+    );
+
+    if (!ujianRows || ujianRows.length === 0) {
+      throw new NotFoundException('Jadwal ujian tidak ditemukan');
+    }
+
+    const ujian = ujianRows[0];
+
+    let query = `
+      SELECT 
+        ku.id, ku.jadwal_ujian_id, ku.siswa_id, ku.kelas_id, ku.ruangan,
+        ku.nomor_kursi, ku.nomor_peserta,
+        s.nama as siswa_nama, s.nisn as siswa_nisn,
+        k.tingkat,
+        CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+      FROM "kartu_ujian" ku
+      JOIN "siswa" s ON ku.siswa_id = s.id
+      JOIN "kelas" k ON ku.kelas_id = k.id
+      JOIN "jurusan" j ON k.jurusan_id = j.id
+      WHERE ku.jadwal_ujian_id = $1
+    `;
+    const params: any[] = [jadwalUjianId];
+
+    if (ruangan && ruangan !== 'ALL') {
+      query += ` AND ku.ruangan = $2`;
+      params.push(ruangan);
+    }
+
+    query += ` ORDER BY ku.ruangan ASC, ku.nomor_kursi ASC, s.nama ASC`;
+
+    const cards = await this.prisma.$queryRawUnsafe<any[]>(query, ...params);
+
+    if (cards.length === 0) {
+      throw new BadRequestException('Belum ada kartu/kursi ujian terdaftar untuk kriteria ini.');
+    }
+
+    const doc = new PDFDocument({
+      size: 'A4',
+      margin: 25,
+      autoFirstPage: false,
+    });
+
+    const bufferPromise = new Promise<Buffer>((resolve, reject) => {
+      const buffers: Buffer[] = [];
+      doc.on('data', (chunk: Buffer) => buffers.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
+      doc.on('error', (err: any) => reject(err));
+    });
+
+    // Dimensi A4 Portrait: 595.28 x 841.89 pt
+    // 2 Kolom x 3 Baris = 6 Kartu per halaman A4
+    const cardWidth = 260;
+    const cardHeight = 245;
+    const marginLeft = 28;
+    const marginTop = 30;
+    const gapX = 18;
+    const gapY = 18;
+
+    for (let i = 0; i < cards.length; i++) {
+      const indexOnPage = i % 6;
+      if (indexOnPage === 0) {
+        doc.addPage({ size: 'A4', margin: 25 });
+      }
+
+      const col = indexOnPage % 2;
+      const row = Math.floor(indexOnPage / 2);
+
+      const cardX = marginLeft + col * (cardWidth + gapX);
+      const cardY = marginTop + row * (cardHeight + gapY);
+
+      const card = cards[i];
+
+      // 1. Garis Potong Putus-Putus (Dashed Cut Border)
+      doc.rect(cardX, cardY, cardWidth, cardHeight)
+        .lineWidth(1)
+        .dash(4, { space: 3 })
+        .strokeColor('#94A3B8')
+        .stroke();
+      doc.undash();
+
+      // 2. Header Label (Nama Sekolah & Nama Ujian)
+      doc.rect(cardX + 1, cardY + 1, cardWidth - 2, 28)
+        .fillColor('#F1F5F9')
+        .fill();
+
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#1E293B')
+        .text((ujian.sekolah_nama || 'SEKOLAH').toUpperCase(), cardX + 8, cardY + 6, {
+          width: cardWidth - 16,
+          align: 'center',
+        });
+
+      doc.font('Helvetica').fontSize(7.5).fillColor('#64748B')
+        .text(ujian.nama_ujian, cardX + 8, cardY + 17, {
+          width: cardWidth - 16,
+          align: 'center',
+        });
+
+      // 3. Kotak Sorotan Nomor Kursi & Ruangan (Tengah Besar)
+      const centerBoxY = cardY + 36;
+      const centerBoxHeight = 115;
+      doc.roundedRect(cardX + 12, centerBoxY, cardWidth - 24, centerBoxHeight, 6)
+        .lineWidth(1.5)
+        .strokeColor('#CBD5E1')
+        .fillColor('#F8FAFC')
+        .fillAndStroke();
+
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#64748B')
+        .text('NOMOR KURSI / BANGKU', cardX + 16, centerBoxY + 8, {
+          width: cardWidth - 32,
+          align: 'center',
+        });
+
+      // Nomor Kursi Sangat Menonjol (Contoh: A1, B2)
+      doc.font('Helvetica-Bold').fontSize(36).fillColor('#0F172A')
+        .text(card.nomor_kursi, cardX + 16, centerBoxY + 22, {
+          width: cardWidth - 32,
+          align: 'center',
+        });
+
+      // Badge Ruang Ujian
+      const roomBadgeWidth = 110;
+      const roomBadgeX = cardX + (cardWidth - roomBadgeWidth) / 2;
+      doc.roundedRect(roomBadgeX, centerBoxY + 76, roomBadgeWidth, 24, 4)
+        .fillColor('#2563EB')
+        .fill();
+
+      doc.font('Helvetica-Bold').fontSize(11).fillColor('#FFFFFF')
+        .text((card.ruangan || 'RUANG 01').toUpperCase(), roomBadgeX, centerBoxY + 83, {
+          width: roomBadgeWidth,
+          align: 'center',
+        });
+
+      // 4. Informasi Identitas Peserta Ujian (Bawah)
+      const studentInfoY = cardY + 160;
+
+      // Nama Siswa
+      doc.font('Helvetica-Bold').fontSize(10).fillColor('#0F172A')
+        .text(card.siswa_nama, cardX + 14, studentInfoY, {
+          width: cardWidth - 28,
+          align: 'center',
+          ellipsis: true,
+        });
+
+      // NISN & Kelas
+      doc.font('Helvetica').fontSize(8.5).fillColor('#475569')
+        .text(`NISN: ${card.siswa_nisn} • ${card.kelas_nama}`, cardX + 14, studentInfoY + 16, {
+          width: cardWidth - 28,
+          align: 'center',
+        });
+
+      // Nomor Peserta
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#2563EB')
+        .text(`No. Peserta: ${card.nomor_peserta}`, cardX + 14, studentInfoY + 30, {
+          width: cardWidth - 28,
+          align: 'center',
+        });
+
+      // Indikator Gunting
+      doc.font('Helvetica-Oblique').fontSize(6.5).fillColor('#94A3B8')
+        .text('[ Tempel pada Meja Ujian ]', cardX + 14, cardY + cardHeight - 14, {
+          width: cardWidth - 28,
+          align: 'center',
+        });
+    }
+
+    doc.end();
+    return bufferPromise;
+  }
 }
+

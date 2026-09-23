@@ -7,10 +7,12 @@ import {
   Patch,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
+import { Response } from 'express';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -27,6 +29,7 @@ import {
 import {
   CreateJadwalUjianDto,
   GenerateJadwalUjianDto,
+  GenerateKartuUjianDto,
   ToggleJadwalUjianStatusDto,
 } from './dto/jadwal-ujian.dto';
 import { JadwalService } from './jadwal.service';
@@ -332,4 +335,153 @@ export class JadwalController {
     );
     return result;
   }
+
+  // =========================================================================
+  // ENDPOINT KARTU UJIAN & DENAH KURSI
+  // =========================================================================
+
+  @Roles(UserRole.ADMIN)
+  @Post('ujian/:id/kartu/generate')
+  @ApiOperation({
+    summary: 'Generate nomor kartu ujian, pembagian ruang, dan nomor kursi siswa - Khusus Admin',
+  })
+  async generateKartuUjian(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: GenerateKartuUjianDto,
+  ) {
+    const result = await this.jadwalUjianService.generateKartuUjian(
+      id,
+      user.sekolah_id,
+      user.sub,
+      dto,
+    );
+    return result;
+  }
+
+  @Roles(UserRole.ADMIN, UserRole.GURU, UserRole.SISWA)
+  @Get('ujian/:id/kartu')
+  @ApiOperation({
+    summary: 'Daftar nomor kartu peserta dan kursi ujian (terpaginasi)',
+  })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'ruangan', required: false })
+  @ApiQuery({ name: 'kelas_id', required: false })
+  @ApiQuery({ name: 'search', required: false })
+  async getKartuUjianList(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Query('page') page: number = 1,
+    @Query('limit') limit: number = 20,
+    @Query('ruangan') ruangan?: string,
+    @Query('kelas_id') kelasId?: string,
+    @Query('search') search?: string,
+  ) {
+    const data = await this.jadwalUjianService.getKartuUjianList(
+      id,
+      user.sekolah_id,
+      Number(page) || 1,
+      Number(limit) || 20,
+      ruangan,
+      kelasId,
+      search,
+    );
+    return { data };
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Get('ujian/:id/kartu/summary')
+  @ApiOperation({
+    summary: 'Ringkasan jumlah peserta dan alokasi per ruangan ujian - Khusus Admin',
+  })
+  async getKartuUjianSummary(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ) {
+    const data = await this.jadwalUjianService.getKartuUjianSummary(
+      id,
+      user.sekolah_id,
+    );
+    return { data };
+  }
+
+  @Roles(UserRole.ADMIN, UserRole.GURU, UserRole.SISWA)
+  @Get('ujian/:id/kartu/pdf')
+  @ApiOperation({
+    summary: 'Unduh Dokumen PDF Kartu Ujian Siswa (A5 Landscape)',
+  })
+  @ApiQuery({ name: 'siswa_id', required: false })
+  @ApiQuery({ name: 'ruangan', required: false })
+  @ApiQuery({ name: 'kelas_id', required: false })
+  async downloadKartuUjianPdf(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Res() res: Response,
+    @Query('siswa_id') siswaId?: string,
+    @Query('ruangan') ruangan?: string,
+    @Query('kelas_id') kelasId?: string,
+  ) {
+    // Jika role siswa, hanya izinkan unduh kartu milik siswa itu sendiri
+    const targetSiswaId = user.role === UserRole.SISWA ? user.sub : siswaId;
+
+    const pdfBuffer = await this.jadwalUjianService.generateKartuUjianPdf(
+      id,
+      user.sekolah_id,
+      targetSiswaId,
+      ruangan,
+      kelasId,
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="kartu-ujian-${id}${targetSiswaId ? `-${targetSiswaId}` : ''}.pdf"`,
+    );
+    res.send(pdfBuffer);
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Get('ujian/:id/label-kursi/pdf')
+  @ApiOperation({
+    summary: 'Unduh Dokumen PDF Label Meja / Denah Kursi untuk ditempel pada tiap bangku (A4 Multi-label)',
+  })
+  @ApiQuery({ name: 'ruangan', required: false })
+  async downloadDenahKursiPdf(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Res() res: Response,
+    @Query('ruangan') ruangan?: string,
+  ) {
+    const pdfBuffer = await this.jadwalUjianService.generateDenahKursiPdf(
+      id,
+      user.sekolah_id,
+      ruangan,
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="label-kursi-meja-${id}${ruangan ? `-${ruangan}` : ''}.pdf"`,
+    );
+    res.send(pdfBuffer);
+  }
+
+  @Roles(UserRole.ADMIN)
+  @Delete('ujian/:id/kartu')
+  @ApiOperation({
+    summary: 'Reset / Hapus seluruh kartu ujian dan nomor kursi pada jadwal ujian - Khusus Admin',
+  })
+  async deleteKartuUjian(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ) {
+    const result = await this.jadwalUjianService.deleteKartuUjian(
+      id,
+      user.sekolah_id,
+      user.sub,
+    );
+    return result;
+  }
 }
+
