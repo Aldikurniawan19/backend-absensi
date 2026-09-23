@@ -7,7 +7,8 @@ import {
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import * as crypto from 'crypto';
-import PDFDocument from 'pdfkit';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const PDFDocument = require('pdfkit/js/pdfkit.standalone');
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import {
