@@ -647,6 +647,12 @@ export class JadwalUjianService implements OnModuleInit {
       throw new NotFoundException('Jadwal ujian tidak ditemukan');
     }
 
+    if (Boolean(existing[0].is_active)) {
+      throw new BadRequestException(
+        'Jadwal ujian yang sedang aktif tidak dapat dihapus. Silakan nonaktifkan jadwal terlebih dahulu.',
+      );
+    }
+
     await this.prisma.$transaction(
       async (tx) => {
         await tx.$executeRawUnsafe(`DELETE FROM "jadwal_ujian_item" WHERE "jadwal_ujian_id" = $1`, id);
