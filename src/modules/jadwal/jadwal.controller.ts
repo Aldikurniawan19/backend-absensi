@@ -7,12 +7,11 @@ import {
   Patch,
   Post,
   Query,
-  Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
-import { Response } from 'express';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -417,12 +416,10 @@ export class JadwalController {
   async downloadKartuUjianPdf(
     @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
-    @Res() res: Response,
     @Query('siswa_id') siswaId?: string,
     @Query('ruangan') ruangan?: string,
     @Query('kelas_id') kelasId?: string,
-  ) {
-    // Jika role siswa, hanya izinkan unduh kartu milik siswa itu sendiri
+  ): Promise<StreamableFile> {
     const targetSiswaId = user.role === UserRole.SISWA ? user.sub : siswaId;
 
     const pdfBuffer = await this.jadwalUjianService.generateKartuUjianPdf(
@@ -433,12 +430,11 @@ export class JadwalController {
       kelasId,
     );
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `inline; filename="kartu-ujian-${id}${targetSiswaId ? `-${targetSiswaId}` : ''}.pdf"`,
-    );
-    res.send(pdfBuffer);
+    return new StreamableFile(pdfBuffer, {
+      type: 'application/pdf',
+      disposition: `attachment; filename="kartu-ujian-${id}${targetSiswaId ? `-${targetSiswaId}` : ''}.pdf"`,
+      length: pdfBuffer.length,
+    });
   }
 
   @Roles(UserRole.ADMIN)
@@ -450,21 +446,20 @@ export class JadwalController {
   async downloadDenahKursiPdf(
     @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
-    @Res() res: Response,
     @Query('ruangan') ruangan?: string,
-  ) {
+  ): Promise<StreamableFile> {
     const pdfBuffer = await this.jadwalUjianService.generateDenahKursiPdf(
       id,
       user.sekolah_id,
       ruangan,
     );
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `inline; filename="label-kursi-meja-${id}${ruangan ? `-${ruangan}` : ''}.pdf"`,
-    );
-    res.send(pdfBuffer);
+    const suffix = ruangan && ruangan !== 'ALL' ? `-${ruangan}` : '';
+    return new StreamableFile(pdfBuffer, {
+      type: 'application/pdf',
+      disposition: `attachment; filename="label-kursi-meja-${id}${suffix}.pdf"`,
+      length: pdfBuffer.length,
+    });
   }
 
   @Roles(UserRole.ADMIN)

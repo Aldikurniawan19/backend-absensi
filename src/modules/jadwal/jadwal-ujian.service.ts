@@ -842,14 +842,14 @@ export class JadwalUjianService implements OnModuleInit {
     const students = await this.prisma.$queryRawUnsafe<any[]>(
       `
       SELECT s.id as siswa_id, s.nama as siswa_nama, s.nisn as siswa_nisn,
-             k.id as kelas_id, k.tingkat, k.nama_rombel, j.kode as jurusan_kode,
-             CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+             k.id as kelas_id, k.tingkat, k.nama_rombel, COALESCE(j.kode, '') as jurusan_kode,
+             CONCAT('Kelas ', k.tingkat, ' ', COALESCE(j.kode, ''), ' ', k.nama_rombel) as kelas_nama
       FROM "riwayat_kelas_siswa" rks
       JOIN "siswa" s ON rks.siswa_id = s.id
       JOIN "kelas" k ON rks.kelas_id = k.id
-      JOIN "jurusan" j ON k.jurusan_id = j.id
+      LEFT JOIN "jurusan" j ON k.jurusan_id = j.id
       WHERE rks.tahun_ajaran_id = $1 AND rks.kelas_id = ANY($2::text[])
-      ORDER BY k.tingkat ASC, j.kode ASC, k.nama_rombel ASC, s.nama ASC
+      ORDER BY k.tingkat ASC, COALESCE(j.kode, '') ASC, k.nama_rombel ASC, s.nama ASC
       `,
       ujian.tahun_ajaran_id,
       classIds,
@@ -1059,12 +1059,12 @@ export class JadwalUjianService implements OnModuleInit {
         ku.nomor_kursi, ku.nomor_peserta, ku."createdAt",
         s.nama as siswa_nama, s.nisn as siswa_nisn,
         k.tingkat,
-        CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+        CONCAT('Kelas ', k.tingkat, ' ', COALESCE(j.kode, ''), ' ', k.nama_rombel) as kelas_nama
       FROM "kartu_ujian" ku
       JOIN "jadwal_ujian" u ON ku.jadwal_ujian_id = u.id
       JOIN "siswa" s ON ku.siswa_id = s.id
       JOIN "kelas" k ON ku.kelas_id = k.id
-      JOIN "jurusan" j ON k.jurusan_id = j.id
+      LEFT JOIN "jurusan" j ON k.jurusan_id = j.id
       ${whereClause}
       ORDER BY ku.ruangan ASC, ku.nomor_kursi ASC, s.nama ASC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
@@ -1189,11 +1189,11 @@ export class JadwalUjianService implements OnModuleInit {
         ku.nomor_kursi, ku.nomor_peserta,
         s.nama as siswa_nama, s.nisn as siswa_nisn,
         k.tingkat,
-        CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+        CONCAT('Kelas ', k.tingkat, ' ', COALESCE(j.kode, ''), ' ', k.nama_rombel) as kelas_nama
       FROM "kartu_ujian" ku
       JOIN "siswa" s ON ku.siswa_id = s.id
       JOIN "kelas" k ON ku.kelas_id = k.id
-      JOIN "jurusan" j ON k.jurusan_id = j.id
+      LEFT JOIN "jurusan" j ON k.jurusan_id = j.id
       WHERE ku.jadwal_ujian_id = $1
     `;
     const params: any[] = [jadwalUjianId];
@@ -1220,8 +1220,8 @@ export class JadwalUjianService implements OnModuleInit {
 
     const cards = await this.prisma.$queryRawUnsafe<any[]>(queryKartu, ...params);
 
-    if (cards.length === 0) {
-      throw new NotFoundException('Belum ada kartu ujian ter-generate untuk kriteria yang dipilih.');
+    if (!cards || cards.length === 0) {
+      throw new BadRequestException('Belum ada kartu peserta ujian yang ter-generate untuk kriteria ini. Silakan klik tombol "Generate Kartu" terlebih dahulu.');
     }
 
     // Ambil seluruh jadwal ujian item untuk mapping jadwal per kelas
@@ -1280,11 +1280,11 @@ export class JadwalUjianService implements OnModuleInit {
 
       // 1. KOP SURAT SEKOLAH
       doc.font('Helvetica-Bold').fontSize(12).fillColor('#0F172A')
-        .text((ujian.sekolah_nama || 'SEKOLAH MENENGAH ATAS').toUpperCase(), 25, 25, { align: 'center' });
+        .text(String(ujian.sekolah_nama || 'SEKOLAH MENENGAH ATAS').toUpperCase(), 25, 25, { align: 'center' });
 
       doc.font('Helvetica').fontSize(7.5).fillColor('#64748B')
         .text(
-          `NPSN: ${ujian.sekolah_npsn || '-'} • Alamat: ${ujian.sekolah_alamat || 'Indonesia'}`,
+          `NPSN: ${String(ujian.sekolah_npsn || '-')} • Alamat: ${String(ujian.sekolah_alamat || 'Indonesia')}`,
           25,
           41,
           { align: 'center' },
@@ -1300,7 +1300,7 @@ export class JadwalUjianService implements OnModuleInit {
 
       doc.font('Helvetica').fontSize(8).fillColor('#475569')
         .text(
-          `${ujian.nama_ujian} • Tahun Ajaran ${ujian.tahun_ajaran_nama || ''} (${ujian.tahun_ajaran_semester || ''})`,
+          `${String(ujian.nama_ujian || 'Ujian')} • Tahun Ajaran ${String(ujian.tahun_ajaran_nama || '')} (${String(ujian.tahun_ajaran_semester || '')})`,
           25,
           77,
           { align: 'center' },
@@ -1310,16 +1310,16 @@ export class JadwalUjianService implements OnModuleInit {
       // Kolom Kiri: Biodata Siswa
       const topInfoY = 94;
       doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Nama Peserta', 35, topInfoY);
-      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#0F172A').text(`:  ${card.siswa_nama}`, 105, topInfoY);
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.siswa_nama || '-')}`, 105, topInfoY);
 
       doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('NISN', 35, topInfoY + 14);
-      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${card.siswa_nisn}`, 105, topInfoY + 14);
+      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.siswa_nisn || '-')}`, 105, topInfoY + 14);
 
       doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('Kelas Asal', 35, topInfoY + 28);
-      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${card.kelas_nama}`, 105, topInfoY + 28);
+      doc.font('Helvetica').fontSize(8.5).fillColor('#0F172A').text(`:  ${String(card.kelas_nama || '-')}`, 105, topInfoY + 28);
 
       doc.font('Helvetica-Bold').fontSize(8).fillColor('#475569').text('No. Peserta', 35, topInfoY + 42);
-      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#2563EB').text(`:  ${card.nomor_peserta}`, 105, topInfoY + 42);
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#2563EB').text(`:  ${String(card.nomor_peserta || '-')}`, 105, topInfoY + 42);
 
       // Kolom Kanan: Kotak Badge Ruang & Kursi Ujian
       const badgeBoxX = 390;
@@ -1330,7 +1330,7 @@ export class JadwalUjianService implements OnModuleInit {
         .text('LOKASI & NOMOR KURSI', badgeBoxX + 10, badgeBoxY + 6);
 
       doc.font('Helvetica-Bold').fontSize(10).fillColor('#1E293B')
-        .text(card.ruangan || 'Ruang 01', badgeBoxX + 10, badgeBoxY + 18);
+        .text(String(card.ruangan || 'Ruang 01'), badgeBoxX + 10, badgeBoxY + 18);
 
       doc.font('Helvetica').fontSize(7.5).fillColor('#475569')
         .text('Nomor Meja/Kursi:', badgeBoxX + 10, badgeBoxY + 36);
@@ -1338,7 +1338,7 @@ export class JadwalUjianService implements OnModuleInit {
       // Badge Nomor Kursi Besar (Contoh: A1)
       doc.roundedRect(badgeBoxX + 105, badgeBoxY + 14, 52, 34, 4).fillColor('#2563EB').fill();
       doc.font('Helvetica-Bold').fontSize(18).fillColor('#FFFFFF')
-        .text(card.nomor_kursi, badgeBoxX + 105, badgeBoxY + 21, { width: 52, align: 'center' });
+        .text(String(card.nomor_kursi || '-'), badgeBoxX + 105, badgeBoxY + 21, { width: 52, align: 'center' });
 
       // 4. TABEL JADWAL SESI MATA PELAJARAN SISWA
       const tableTopY = 160;
@@ -1373,8 +1373,8 @@ export class JadwalUjianService implements OnModuleInit {
         doc.text(String(idx + 1), startX + 4, rowY + 3.5, { width: colWidths.no, align: 'center' });
         doc.text(tglText, startX + 28, rowY + 3.5, { width: colWidths.tanggal });
         doc.text(`${item.jam_mulai} - ${item.jam_selesai}`, startX + 125, rowY + 3.5, { width: colWidths.jam, align: 'center' });
-        doc.font('Helvetica-Bold').text(item.mapel_nama, startX + 200, rowY + 3.5, { width: colWidths.mapel });
-        doc.font('Helvetica').text(card.ruangan || item.ruangan || '-', startX + 395, rowY + 3.5, { width: colWidths.ruang, align: 'center' });
+        doc.font('Helvetica-Bold').text(String(item.mapel_nama || '-'), startX + 200, rowY + 3.5, { width: colWidths.mapel });
+        doc.font('Helvetica').text(String(card.ruangan || item.ruangan || '-'), startX + 395, rowY + 3.5, { width: colWidths.ruang, align: 'center' });
         doc.text('.........', startX + 465, rowY + 3.5, { width: colWidths.paraf, align: 'center' });
 
         rowY += 14;
@@ -1445,11 +1445,11 @@ export class JadwalUjianService implements OnModuleInit {
         ku.nomor_kursi, ku.nomor_peserta,
         s.nama as siswa_nama, s.nisn as siswa_nisn,
         k.tingkat,
-        CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
+        CONCAT('Kelas ', k.tingkat, ' ', COALESCE(j.kode, ''), ' ', k.nama_rombel) as kelas_nama
       FROM "kartu_ujian" ku
       JOIN "siswa" s ON ku.siswa_id = s.id
       JOIN "kelas" k ON ku.kelas_id = k.id
-      JOIN "jurusan" j ON k.jurusan_id = j.id
+      LEFT JOIN "jurusan" j ON k.jurusan_id = j.id
       WHERE ku.jadwal_ujian_id = $1
     `;
     const params: any[] = [jadwalUjianId];
@@ -1463,8 +1463,8 @@ export class JadwalUjianService implements OnModuleInit {
 
     const cards = await this.prisma.$queryRawUnsafe<any[]>(query, ...params);
 
-    if (cards.length === 0) {
-      throw new BadRequestException('Belum ada kartu/kursi ujian terdaftar untuk kriteria ini.');
+    if (!cards || cards.length === 0) {
+      throw new BadRequestException('Belum ada kartu atau nomor kursi yang ter-generate untuk kriteria ruangan ini. Silakan klik tombol "Generate Kartu" terlebih dahulu.');
     }
 
     const doc = new PDFDocument({
@@ -1517,13 +1517,13 @@ export class JadwalUjianService implements OnModuleInit {
         .fill();
 
       doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#1E293B')
-        .text((ujian.sekolah_nama || 'SEKOLAH').toUpperCase(), cardX + 8, cardY + 6, {
+        .text(String(ujian.sekolah_nama || 'SEKOLAH').toUpperCase(), cardX + 8, cardY + 6, {
           width: cardWidth - 16,
           align: 'center',
         });
 
       doc.font('Helvetica').fontSize(7.5).fillColor('#64748B')
-        .text(ujian.nama_ujian, cardX + 8, cardY + 17, {
+        .text(String(ujian.nama_ujian || 'UJIAN'), cardX + 8, cardY + 17, {
           width: cardWidth - 16,
           align: 'center',
         });
@@ -1545,7 +1545,7 @@ export class JadwalUjianService implements OnModuleInit {
 
       // Nomor Kursi Sangat Menonjol (Contoh: A1, B2)
       doc.font('Helvetica-Bold').fontSize(36).fillColor('#0F172A')
-        .text(card.nomor_kursi, cardX + 16, centerBoxY + 22, {
+        .text(String(card.nomor_kursi || '-'), cardX + 16, centerBoxY + 22, {
           width: cardWidth - 32,
           align: 'center',
         });
@@ -1558,7 +1558,7 @@ export class JadwalUjianService implements OnModuleInit {
         .fill();
 
       doc.font('Helvetica-Bold').fontSize(11).fillColor('#FFFFFF')
-        .text((card.ruangan || 'RUANG 01').toUpperCase(), roomBadgeX, centerBoxY + 83, {
+        .text(String(card.ruangan || 'RUANG 01').toUpperCase(), roomBadgeX, centerBoxY + 83, {
           width: roomBadgeWidth,
           align: 'center',
         });
@@ -1568,7 +1568,7 @@ export class JadwalUjianService implements OnModuleInit {
 
       // Nama Siswa
       doc.font('Helvetica-Bold').fontSize(10).fillColor('#0F172A')
-        .text(card.siswa_nama, cardX + 14, studentInfoY, {
+        .text(String(card.siswa_nama || 'Siswa'), cardX + 14, studentInfoY, {
           width: cardWidth - 28,
           align: 'center',
           ellipsis: true,
@@ -1576,14 +1576,14 @@ export class JadwalUjianService implements OnModuleInit {
 
       // NISN & Kelas
       doc.font('Helvetica').fontSize(8.5).fillColor('#475569')
-        .text(`NISN: ${card.siswa_nisn} • ${card.kelas_nama}`, cardX + 14, studentInfoY + 16, {
+        .text(`NISN: ${String(card.siswa_nisn || '-')} • ${String(card.kelas_nama || '-')}`, cardX + 14, studentInfoY + 16, {
           width: cardWidth - 28,
           align: 'center',
         });
 
       // Nomor Peserta
       doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#2563EB')
-        .text(`No. Peserta: ${card.nomor_peserta}`, cardX + 14, studentInfoY + 30, {
+        .text(`No. Peserta: ${String(card.nomor_peserta || '-')}`, cardX + 14, studentInfoY + 30, {
           width: cardWidth - 28,
           align: 'center',
         });
