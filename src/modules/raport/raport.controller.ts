@@ -59,6 +59,31 @@ export class RaportController {
     return { data };
   }
 
+  @Roles(UserRole.SISWA, UserRole.GURU, UserRole.ADMIN)
+  @Get('saya/khs')
+  @ApiOperation({ summary: 'Ambil Kartu Hasil Studi (KHS) siswa yang sedang login' })
+  async getKhsSaya(@CurrentUser() user: JwtPayload) {
+    const data = await this.raportService.getKhsSiswa(
+      user.sub,
+      user.sekolah_id,
+    );
+    return { data };
+  }
+
+  @Roles(UserRole.SISWA, UserRole.GURU, UserRole.ADMIN)
+  @Get('siswa/:siswaId/khs')
+  @ApiOperation({ summary: 'Ambil Kartu Hasil Studi (KHS) siswa berdasarkan ID' })
+  async getKhsSiswa(
+    @CurrentUser() user: JwtPayload,
+    @Param('siswaId') siswaId: string,
+  ) {
+    const data = await this.raportService.getKhsSiswa(
+      siswaId,
+      user.sekolah_id,
+    );
+    return { data };
+  }
+
   @Roles(UserRole.GURU, UserRole.ADMIN)
   @Get('siswa/:siswaId')
   @ApiOperation({ summary: 'Ambil detail lengkap raport satu siswa' })
