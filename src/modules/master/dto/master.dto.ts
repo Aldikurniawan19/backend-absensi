@@ -21,6 +21,11 @@ export class UpdateSekolahDto {
   @IsString()
   nama?: string;
 
+  @ApiPropertyOptional({ example: '20101603', description: 'Nomor Pokok Sekolah Nasional' })
+  @IsOptional()
+  @IsString()
+  npsn?: string;
+
   @ApiPropertyOptional({ example: 'Jl. Budi Utomo No. 7' })
   @IsOptional()
   @IsString()

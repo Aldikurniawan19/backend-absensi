@@ -43,6 +43,15 @@ export class MasterController {
     return { data };
   }
 
+  @Get('sekolah/referensi-kemdikbud')
+  @ApiOperation({
+    summary: 'Cari referensi data sekolah resmi (Dapodik / Kemdikbud) berdasarkan Nama atau NPSN',
+  })
+  async getReferensiSekolah(@Query('query') query: string) {
+    const data = await this.masterService.cariReferensiSekolah(query);
+    return { data };
+  }
+
   @Roles(UserRole.ADMIN)
   @Patch('sekolah')
   @ApiOperation({ summary: 'Ubah konfigurasi sekolah (GPS, radius, batas sesi siswa) - Khusus Admin' })

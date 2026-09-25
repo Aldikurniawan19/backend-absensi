@@ -64,6 +64,164 @@ export class MasterService {
     return updated;
   }
 
+  async cariReferensiSekolah(query: string) {
+    const trimmed = query?.trim();
+    if (!trimmed || trimmed.length < 2) return [];
+
+    const cacheKey = `ref-sekolah:${trimmed.toLowerCase()}`;
+    const cached = this.masterCache.get<any[]>(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const isNpsn = /^\d{5,8}$/.test(trimmed);
+      const queryList: string[] = [];
+
+      if (isNpsn) {
+        queryList.push(
+          `https://api-sekolah-indonesia.vercel.app/sekolah?npsn=${encodeURIComponent(trimmed)}`,
+        );
+      } else {
+        queryList.push(
+          `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(trimmed)}&page=1&perPage=15`,
+        );
+
+        // Generate query variants for Indonesian school naming patterns in Dapodik
+        if (/^sma negeri\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^sma negeri\b/i, 'SMAN');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        } else if (/^sman\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^sman\b/i, 'SMA NEGERI');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        }
+
+        if (/^smp negeri\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^smp negeri\b/i, 'SMPN');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        } else if (/^smpn\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^smpn\b/i, 'SMP NEGERI');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        }
+
+        if (/^smk negeri\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^smk negeri\b/i, 'SMKN');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        } else if (/^smkn\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^smkn\b/i, 'SMK NEGERI');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        }
+
+        if (/^sd negeri\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^sd negeri\b/i, 'SDN');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        } else if (/^sdn\b/i.test(trimmed)) {
+          const v = trimmed.replace(/^sdn\b/i, 'SD NEGERI');
+          queryList.push(
+            `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(v)}&page=1&perPage=15`,
+          );
+        }
+      }
+
+      const fetchPromises = queryList.map(async (url) => {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4500);
+          const res = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+              Accept: 'application/json',
+              'User-Agent': 'SistemAbsensiApp/1.0',
+            },
+          });
+          clearTimeout(timeoutId);
+          if (!res.ok) return [];
+          const json = await res.json();
+          return Array.isArray(json)
+            ? json
+            : json?.dataSekolah || json?.data || [];
+        } catch {
+          return [];
+        }
+      });
+
+      const nestedItems = await Promise.all(fetchPromises);
+      const allRaw = nestedItems.flat();
+
+      // Deduplicate by NPSN or ID
+      const seenNpsn = new Set<string>();
+      const formatted: any[] = [];
+
+      for (const item of allRaw) {
+        const itemNpsn = String(item.npsn || '').trim();
+        const itemKey = itemNpsn || item.id || item.sekolah;
+        if (!itemKey || seenNpsn.has(itemKey)) continue;
+        seenNpsn.add(itemKey);
+
+        const shape = item.bentuk || 'Sekolah';
+        const statusStr =
+          item.status === 'N'
+            ? 'Negeri'
+            : item.status === 'S'
+            ? 'Swasta'
+            : item.status || '';
+        const addressParts = [
+          item.alamat_jalan,
+          item.desa_kelurahan ? `Kel. ${item.desa_kelurahan}` : '',
+          item.kecamatan
+            ? item.kecamatan.replace(/^kec\.?\s*/i, 'Kec. ')
+            : '',
+          item.kabupaten_kota
+            ? item.kabupaten_kota
+                .replace(/^kab\.?\s*/i, 'Kab. ')
+                .replace(/^kota\s*/i, 'Kota ')
+            : '',
+          item.propinsi ? item.propinsi.replace(/^prov\.?\s*/i, 'Prov. ') : '',
+        ].filter(Boolean);
+
+        const latNum = item.lintang ? parseFloat(item.lintang) : null;
+        const lngNum = item.bujur ? parseFloat(item.bujur) : null;
+
+        formatted.push({
+          npsn: itemNpsn,
+          nama: item.sekolah || '',
+          bentuk: shape,
+          status: statusStr,
+          alamat: item.alamat_jalan || '',
+          alamat_lengkap: addressParts.join(', ') || item.alamat_jalan || '',
+          kecamatan: item.kecamatan || '',
+          kabupaten_kota: item.kabupaten_kota || '',
+          provinsi: item.propinsi || '',
+          lat:
+            latNum !== null && !isNaN(latNum)
+              ? Number(latNum.toFixed(7))
+              : null,
+          lng:
+            lngNum !== null && !isNaN(lngNum)
+              ? Number(lngNum.toFixed(7))
+              : null,
+        });
+      }
+
+      this.masterCache.set(cacheKey, formatted, 60 * 60 * 1000); // 1 jam cache
+      return formatted;
+    } catch {
+      return [];
+    }
+  }
+
   // ==================== TAHUN AJARAN ====================
   async getTahunAjaranList(sekolahId: string) {
     return this.prisma.tahunAjaran.findMany({
