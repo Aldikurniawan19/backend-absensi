@@ -315,7 +315,7 @@ export class JadwalUjianService implements OnModuleInit {
   /**
    * Mengambil Jadwal Ujian yang sedang AKTIF (untuk Tampilan Mobile Siswa & Guru)
    */
-  async getActiveJadwalUjian(sekolahId?: string, kelasId?: string, guruId?: string) {
+  async getActiveJadwalUjian(sekolahId?: string, kelasId?: string, guruId?: string, siswaId?: string) {
     let whereSekolah = '';
     const params: any[] = [];
 
@@ -349,12 +349,60 @@ export class JadwalUjianService implements OnModuleInit {
 
     const activeUjian = activeUjianRows[0];
 
+    // Jika siswaId ada, resolve kelas siswa dan data kartu peserta ujian
+    let siswaKartu: any = null;
+    if (siswaId) {
+      // 1. Cek kartu_ujian siswa jika sudah digenerate
+      const kartuRows = await this.prisma.$queryRawUnsafe<any[]>(
+        `
+        SELECT ku.ruangan, ku.nomor_kursi, ku.nomor_peserta, ku.kelas_id
+        FROM "kartu_ujian" ku
+        WHERE ku.jadwal_ujian_id = $1 AND ku.siswa_id = $2
+        LIMIT 1
+        `,
+        activeUjian.id,
+        siswaId,
+      );
+
+      if (kartuRows && kartuRows.length > 0) {
+        siswaKartu = kartuRows[0];
+        if (!kelasId && siswaKartu.kelas_id) {
+          kelasId = siswaKartu.kelas_id;
+        }
+      }
+
+      // 2. Jika kelasId masih belum didapat, cari dari riwayat_kelas_siswa pada tahun ajaran ujian terkait
+      if (!kelasId) {
+        const riwayat = await this.prisma.riwayatKelasSiswa.findFirst({
+          where: {
+            siswa_id: siswaId,
+            tahun_ajaran_id: activeUjian.tahun_ajaran_id,
+          },
+          select: { kelas_id: true },
+        });
+
+        if (riwayat) {
+          kelasId = riwayat.kelas_id;
+        } else {
+          const anyRiwayat = await this.prisma.riwayatKelasSiswa.findFirst({
+            where: { siswa_id: siswaId },
+            orderBy: { createdAt: 'desc' },
+            select: { kelas_id: true },
+          });
+          if (anyRiwayat) {
+            kelasId = anyRiwayat.kelas_id;
+          }
+        }
+      }
+    }
+
     // Ambil item ujian untuk kelas siswa / guru terkait
     let itemQuery = `
       SELECT 
         i.id, i.jadwal_ujian_id, i.kelas_id, i.mapel_id, i.guru_id,
         TO_CHAR(i.tanggal, 'YYYY-MM-DD') as tanggal,
-        i.hari, i.jam_mulai, i.jam_selesai, i.ruangan,
+        i.hari, i.jam_mulai, i.jam_selesai,
+        COALESCE(i.ruangan, 'Ruang Ujian') as ruangan,
         m.nama as mapel_nama, m.kode as mapel_kode,
         g.nama as guru_nama,
         CONCAT('Kelas ', k.tingkat, ' ', j.kode, ' ', k.nama_rombel) as kelas_nama
@@ -378,18 +426,28 @@ export class JadwalUjianService implements OnModuleInit {
 
     itemQuery += ` ORDER BY i.tanggal ASC, i.jam_mulai ASC`;
 
-    const items = await this.prisma.$queryRawUnsafe<any[]>(itemQuery, ...itemParams);
+    const rawItems = await this.prisma.$queryRawUnsafe<any[]>(itemQuery, ...itemParams);
+
+    // Jika siswa punya ruangan khusus dari kartu ujian, override ruangan item dengan ruangan kartu peserta
+    const items = rawItems.map((item) => ({
+      ...item,
+      ruangan: (siswaKartu && siswaKartu.ruangan) ? siswaKartu.ruangan : item.ruangan,
+      nomor_kursi: siswaKartu?.nomor_kursi,
+      nomor_peserta: siswaKartu?.nomor_peserta,
+    }));
 
     return {
       ...activeUjian,
       is_active: true,
       items,
       total_items: items.length,
+      kartu_peserta: siswaKartu,
     };
   }
 
   /**
    * Men-generate simulasi/pratinjau Jadwal Ujian otomatis (PTS / PAS)
+   * Setiap kelas hanya dijadwalkan sesuai mata pelajaran yang aktif diajarkan pada kelas tersebut
    */
   async generateJadwalUjianPreview(dto: GenerateJadwalUjianDto, sekolahId: string) {
     const tahunAjaran = await this.prisma.tahunAjaran.findUnique({
@@ -417,17 +475,17 @@ export class JadwalUjianService implements OnModuleInit {
       throw new BadRequestException('Tidak ada kelas yang dipilih untuk jadwal ujian.');
     }
 
-    // Ambil daftar guru dan mata pelajaran
+    // Ambil daftar guru dan mata pelajaran fallback sekolah
     const teachers = await this.prisma.guru.findMany({
       where: { sekolah_id: sekolahId },
       select: { id: true, nama: true, nip: true },
     });
 
-    const subjects = await this.prisma.mataPelajaran.findMany({
+    const fallbackSubjects = await this.prisma.mataPelajaran.findMany({
       where: { sekolah_id: sekolahId },
     });
 
-    if (subjects.length === 0) {
+    if (fallbackSubjects.length === 0) {
       throw new BadRequestException('Belum ada data mata pelajaran terdaftar.');
     }
 
@@ -480,7 +538,7 @@ export class JadwalUjianService implements OnModuleInit {
       });
     }
 
-    // Generate slot ujian untuk setiap kelas
+    // Generate slot ujian untuk setiap kelas spesifik sesuai mata pelajaran kelas tersebut
     const generatedItems: Array<JadwalUjianItemRecord & { kelas_nama: string; mapel_nama: string; guru_nama: string }> = [];
 
     let teacherIdx = 0;
@@ -489,13 +547,61 @@ export class JadwalUjianService implements OnModuleInit {
       const kelasNama = `Kelas ${cls.tingkat} ${cls.jurusan.kode} ${cls.nama_rombel}`;
       const ruangan = `Ruang ${cls.tingkat}-${cls.jurusan.kode}-${cls.nama_rombel}`;
 
+      // 1. Ambil mata pelajaran yang AKTIF diajarkan pada kelas ini di tahun ajaran terkait dari jadwal_pelajaran
+      const jadwalClass = await this.prisma.jadwalPelajaran.findMany({
+        where: {
+          kelas_id: cls.id,
+          tahun_ajaran_id: dto.tahun_ajaran_id,
+        },
+        include: {
+          mapel: true,
+          guru: { select: { id: true, nama: true, nip: true } },
+        },
+        orderBy: { mapel: { nama: 'asc' } },
+      });
+
+      const classMapelMap = new Map<string, { mapel: any; defaultGuru?: any }>();
+      for (const jp of jadwalClass) {
+        if (!classMapelMap.has(jp.mapel_id)) {
+          classMapelMap.set(jp.mapel_id, { mapel: jp.mapel, defaultGuru: jp.guru });
+        }
+      }
+
+      // 2. Jika jadwal_pelajaran belum ada, cek nilai_siswa pada kelas & tahun ajaran ini
+      if (classMapelMap.size === 0) {
+        const nilaiClass = await this.prisma.nilaiSiswa.findMany({
+          where: {
+            kelas_id: cls.id,
+            tahun_ajaran_id: dto.tahun_ajaran_id,
+          },
+          include: {
+            mapel: true,
+            guru: { select: { id: true, nama: true, nip: true } },
+          },
+          distinct: ['mapel_id'],
+        });
+
+        for (const nc of nilaiClass) {
+          if (!classMapelMap.has(nc.mapel_id)) {
+            classMapelMap.set(nc.mapel_id, { mapel: nc.mapel, defaultGuru: nc.guru });
+          }
+        }
+      }
+
+      // 3. Fallback jika masih kosong (misal setup awal belum ada jadwal atau nilai)
+      let classSubjects: Array<{ mapel: any; defaultGuru?: any }> = Array.from(classMapelMap.values());
+      if (classSubjects.length === 0) {
+        classSubjects = fallbackSubjects.map((m) => ({ mapel: m }));
+      }
+
       let subjectIdx = 0;
       for (const d of examDates) {
         for (const s of sessions) {
-          if (subjectIdx >= subjects.length) break;
+          // Berhenti segera setelah semua mata pelajaran kelas ini terjadwalkan (e.g. 12 mapel)
+          if (subjectIdx >= classSubjects.length) break;
 
-          const mapel = subjects[subjectIdx % subjects.length];
-          const guru = teachers.length > 0 ? teachers[teacherIdx % teachers.length] : null;
+          const { mapel, defaultGuru } = classSubjects[subjectIdx];
+          const pengawas = teachers.length > 0 ? teachers[teacherIdx % teachers.length] : defaultGuru;
           teacherIdx++;
           subjectIdx++;
 
@@ -504,7 +610,7 @@ export class JadwalUjianService implements OnModuleInit {
             jadwal_ujian_id: '',
             kelas_id: cls.id,
             mapel_id: mapel.id,
-            guru_id: guru?.id || null,
+            guru_id: pengawas?.id || null,
             tanggal: d.dateStr,
             hari: d.hari,
             jam_mulai: s.jam_mulai,
@@ -512,10 +618,11 @@ export class JadwalUjianService implements OnModuleInit {
             ruangan,
             mapel_nama: mapel.nama,
             mapel_kode: mapel.kode,
-            guru_nama: guru?.nama || 'Pengawas Belum Ditugaskan',
+            guru_nama: pengawas?.nama || 'Pengawas Belum Ditugaskan',
             kelas_nama: kelasNama,
           });
         }
+        if (subjectIdx >= classSubjects.length) break;
       }
     }
 

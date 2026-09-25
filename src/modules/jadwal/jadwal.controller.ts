@@ -220,6 +220,7 @@ export class JadwalController {
       user.sekolah_id,
       resolvedKelasId,
       resolvedGuruId,
+      user.role === UserRole.SISWA ? user.sub : undefined,
     );
     return { data };
   }
