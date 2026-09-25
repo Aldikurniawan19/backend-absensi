@@ -5,6 +5,9 @@ export interface NilaiRaportMapel {
   mapel_nama: string;
   mapel_kode: string;
   guru_nama?: string;
+  rata_formatif?: number | null;
+  nilai_sts?: number | null;
+  nilai_sas?: number | null;
   nilai_akhir: number | null;
   predikat: PredikatBBPB | null;
   predikat_label?: string | null;

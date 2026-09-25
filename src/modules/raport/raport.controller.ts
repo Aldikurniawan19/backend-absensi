@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -24,6 +25,22 @@ import { RaportService } from './raport.service';
 @Controller('raport')
 export class RaportController {
   constructor(private readonly raportService: RaportService) {}
+
+  @Roles(UserRole.SISWA)
+  @Get('my')
+  @ApiOperation({ summary: 'Ambil detail kartu hasil studi / raport siswa yang sedang login' })
+  @ApiQuery({ name: 'tahun_ajaran_id', required: false })
+  async getMyRaport(
+    @CurrentUser() user: JwtPayload,
+    @Query('tahun_ajaran_id') tahunAjaranId?: string,
+  ) {
+    const data = await this.raportService.getDetailRaportSiswa(
+      user.sub,
+      user.sekolah_id,
+      tahunAjaranId,
+    );
+    return { data };
+  }
 
   @Roles(UserRole.GURU, UserRole.ADMIN)
   @Post('generate/:kelasId')
@@ -59,32 +76,7 @@ export class RaportController {
     return { data };
   }
 
-  @Roles(UserRole.SISWA, UserRole.GURU, UserRole.ADMIN)
-  @Get('saya/khs')
-  @ApiOperation({ summary: 'Ambil Kartu Hasil Studi (KHS) siswa yang sedang login' })
-  async getKhsSaya(@CurrentUser() user: JwtPayload) {
-    const data = await this.raportService.getKhsSiswa(
-      user.sub,
-      user.sekolah_id,
-    );
-    return { data };
-  }
-
-  @Roles(UserRole.SISWA, UserRole.GURU, UserRole.ADMIN)
-  @Get('siswa/:siswaId/khs')
-  @ApiOperation({ summary: 'Ambil Kartu Hasil Studi (KHS) siswa berdasarkan ID' })
-  async getKhsSiswa(
-    @CurrentUser() user: JwtPayload,
-    @Param('siswaId') siswaId: string,
-  ) {
-    const data = await this.raportService.getKhsSiswa(
-      siswaId,
-      user.sekolah_id,
-    );
-    return { data };
-  }
-
-  @Roles(UserRole.GURU, UserRole.ADMIN)
+  @Roles(UserRole.GURU, UserRole.ADMIN, UserRole.SISWA)
   @Get('siswa/:siswaId')
   @ApiOperation({ summary: 'Ambil detail lengkap raport satu siswa' })
   @ApiQuery({ name: 'tahun_ajaran_id', required: false })
@@ -93,6 +85,9 @@ export class RaportController {
     @Param('siswaId') siswaId: string,
     @Query('tahun_ajaran_id') tahunAjaranId?: string,
   ) {
+    if (user.role === UserRole.SISWA && user.sub !== siswaId) {
+      throw new ForbiddenException('Siswa hanya dapat mengakses data hasil studi diri sendiri');
+    }
     const data = await this.raportService.getDetailRaportSiswa(
       siswaId,
       user.sekolah_id,
@@ -151,7 +146,7 @@ export class RaportController {
     return { message: 'Finalisasi raport dibatalkan', data };
   }
 
-  @Roles(UserRole.GURU, UserRole.ADMIN)
+  @Roles(UserRole.GURU, UserRole.ADMIN, UserRole.SISWA)
   @Get('siswa/:siswaId/pdf')
   @ApiOperation({ summary: 'Unduh dokumen PDF Raport Kurikulum Merdeka siswa' })
   @ApiQuery({ name: 'tahun_ajaran_id', required: false })
@@ -160,6 +155,9 @@ export class RaportController {
     @Param('siswaId') siswaId: string,
     @Query('tahun_ajaran_id') tahunAjaranId?: string,
   ): Promise<StreamableFile> {
+    if (user.role === UserRole.SISWA && user.sub !== siswaId) {
+      throw new ForbiddenException('Siswa hanya dapat mengunduh dokumen hasil studi diri sendiri');
+    }
     const pdfBuffer = await this.raportService.generateRaportPdf(
       siswaId,
       user.sekolah_id,
