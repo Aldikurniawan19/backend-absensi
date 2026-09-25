@@ -14,6 +14,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:seed:10-mipa-2": "ts-node prisma/seed-10-mipa-2.ts",
     "prisma:studio": "prisma studio",
     "test": "jest",
     "test:watch": "jest --watch",

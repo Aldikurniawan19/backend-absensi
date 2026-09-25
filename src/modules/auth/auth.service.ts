@@ -39,25 +39,40 @@ export class AuthService {
   ) {}
 
   /**
-   * Cari akun berdasarkan identifier (Email, NISN, atau NIP) di tiga tabel akun
+   * Cari akun berdasarkan identifier (Email, NISN, atau NIP) di tiga tabel akun secara paralel
    */
   private async findAccount(identifier: string): Promise<AccountResult | null> {
     const trimmed = identifier.trim();
 
-    // 1. Cek Admin (Email)
-    const admin = await this.prisma.admin.findFirst({
-      where: { email: trimmed },
-      include: {
-        sekolah: {
-          select: {
-            id: true,
-            nama: true,
-            wajib_gps: true,
-            maks_sesi_aktif_siswa: true,
-          },
-        },
+    const sekolahSelect = {
+      select: {
+        id: true,
+        nama: true,
+        wajib_gps: true,
+        maks_sesi_aktif_siswa: true,
       },
-    });
+    };
+
+    // Jalankan pengecekan ke 3 tabel secara paralel untuk memangkas waktu login
+    const [admin, guru, siswa] = await Promise.all([
+      this.prisma.admin.findFirst({
+        where: { email: trimmed },
+        include: { sekolah: sekolahSelect },
+      }),
+      this.prisma.guru.findFirst({
+        where: {
+          OR: [{ email: trimmed }, { nip: trimmed }],
+        },
+        include: { sekolah: sekolahSelect },
+      }),
+      this.prisma.siswa.findFirst({
+        where: {
+          OR: [{ email: trimmed }, { nisn: trimmed }],
+        },
+        include: { sekolah: sekolahSelect },
+      }),
+    ]);
+
     if (admin) {
       return {
         id: admin.id,
@@ -70,22 +85,6 @@ export class AuthService {
       };
     }
 
-    // 2. Cek Guru (Email atau NIP)
-    const guru = await this.prisma.guru.findFirst({
-      where: {
-        OR: [{ email: trimmed }, { nip: trimmed }],
-      },
-      include: {
-        sekolah: {
-          select: {
-            id: true,
-            nama: true,
-            wajib_gps: true,
-            maks_sesi_aktif_siswa: true,
-          },
-        },
-      },
-    });
     if (guru) {
       return {
         id: guru.id,
@@ -98,22 +97,6 @@ export class AuthService {
       };
     }
 
-    // 3. Cek Siswa (Email atau NISN)
-    const siswa = await this.prisma.siswa.findFirst({
-      where: {
-        OR: [{ email: trimmed }, { nisn: trimmed }],
-      },
-      include: {
-        sekolah: {
-          select: {
-            id: true,
-            nama: true,
-            wajib_gps: true,
-            maks_sesi_aktif_siswa: true,
-          },
-        },
-      },
-    });
     if (siswa) {
       return {
         id: siswa.id,
@@ -128,6 +111,7 @@ export class AuthService {
 
     return null;
   }
+
 
   async login(dto: LoginDto) {
     const account = await this.findAccount(dto.identifier);
@@ -209,15 +193,13 @@ export class AuthService {
       details: `Login berhasil dari ${dto.device_info}`,
     });
 
+    const userProfile = await this.getMe({
+      sub: account.id,
+      role: account.role,
+    });
+
     return {
-      user: {
-        id: account.id,
-        nama: account.nama,
-        email: account.email,
-        role: account.role,
-        sekolah_id: account.sekolah_id,
-        sekolah: account.sekolah,
-      },
+      user: userProfile,
       tokens,
     };
   }
@@ -373,7 +355,7 @@ export class AuthService {
     return { message: 'Sesi perangkat berhasil dihentikan' };
   }
 
-  async getMe(user: JwtPayload) {
+  async getMe(user: Pick<JwtPayload, 'sub' | 'role'>) {
     if (user.role === UserRole.SISWA) {
       const siswa = await this.prisma.siswa.findUnique({
         where: { id: user.sub },

@@ -211,49 +211,82 @@ export class LaporanService {
         ...(tahunAjaranId ? { tahun_ajaran_id: tahunAjaranId } : {}),
       },
       include: {
-        siswa: true,
+        siswa: { select: { id: true, nama: true, nisn: true } },
       },
       orderBy: { siswa: { nama: 'asc' } },
     });
 
-    const studentStats = await Promise.all(
-      students.map(async (st) => {
-        const absensi = await this.prisma.absensi.findMany({
-          where: {
-            siswa_id: st.siswa_id,
-            sesi: {
-              jadwal: {
-                kelas_id: kelasId,
-                ...(tahunAjaranId ? { tahun_ajaran_id: tahunAjaranId } : {}),
+    const studentIds = students.map((s) => s.siswa_id);
+
+    // Ambil seluruh rekap absensi sekaligus dalam 1 query batch (Eliminasi N+1 Problem)
+    const allAbsensi =
+      studentIds.length > 0
+        ? await this.prisma.absensi.findMany({
+            where: {
+              siswa_id: { in: studentIds },
+              sesi: {
+                jadwal: {
+                  kelas_id: kelasId,
+                  ...(tahunAjaranId ? { tahun_ajaran_id: tahunAjaranId } : {}),
+                },
               },
             },
-          },
-        });
+            select: {
+              siswa_id: true,
+              status: true,
+            },
+          })
+        : [];
 
-        const hadir = absensi.filter((a) => a.status === 'HADIR').length;
-        const terlambat = absensi.filter((a) => a.status === 'TERLAMBAT').length;
-        const izin = absensi.filter((a) => a.status === 'IZIN').length;
-        const sakit = absensi.filter((a) => a.status === 'SAKIT').length;
-        const alpa = absensi.filter((a) => a.status === 'ALPA').length;
-        const total = absensi.length;
-        const rate = total > 0 ? Number((((hadir + terlambat) / total) * 100).toFixed(1)) : 0;
+    // Agregasi status absensi per siswa di memori (O(N))
+    const statsByStudent = new Map<
+      string,
+      { hadir: number; terlambat: number; izin: number; sakit: number; alpa: number; total: number }
+    >();
 
-        return {
-          siswa: {
-            id: st.siswa.id,
-            nama: st.siswa.nama,
-            nisn: st.siswa.nisn,
-          },
-          total_pertemuan: total,
-          hadir,
-          terlambat,
-          izin,
-          sakit,
-          alpa,
-          persentase_kehadiran: rate,
-        };
-      }),
-    );
+    for (const a of allAbsensi) {
+      let stat = statsByStudent.get(a.siswa_id);
+      if (!stat) {
+        stat = { hadir: 0, terlambat: 0, izin: 0, sakit: 0, alpa: 0, total: 0 };
+        statsByStudent.set(a.siswa_id, stat);
+      }
+      stat.total++;
+      if (a.status === 'HADIR') stat.hadir++;
+      else if (a.status === 'TERLAMBAT') stat.terlambat++;
+      else if (a.status === 'IZIN') stat.izin++;
+      else if (a.status === 'SAKIT') stat.sakit++;
+      else if (a.status === 'ALPA') stat.alpa++;
+    }
+
+    const studentStats = students.map((st) => {
+      const stat = statsByStudent.get(st.siswa_id) || {
+        hadir: 0,
+        terlambat: 0,
+        izin: 0,
+        sakit: 0,
+        alpa: 0,
+        total: 0,
+      };
+      const rate =
+        stat.total > 0
+          ? Number((((stat.hadir + stat.terlambat) / stat.total) * 100).toFixed(1))
+          : 0;
+
+      return {
+        siswa: {
+          id: st.siswa.id,
+          nama: st.siswa.nama,
+          nisn: st.siswa.nisn,
+        },
+        total_pertemuan: stat.total,
+        hadir: stat.hadir,
+        terlambat: stat.terlambat,
+        izin: stat.izin,
+        sakit: stat.sakit,
+        alpa: stat.alpa,
+        persentase_kehadiran: rate,
+      };
+    });
 
     return {
       kelas: {
@@ -264,6 +297,7 @@ export class LaporanService {
       siswa_rekap: studentStats,
     };
   }
+
 
 
   async getDashboardOverview(sekolahId: string) {

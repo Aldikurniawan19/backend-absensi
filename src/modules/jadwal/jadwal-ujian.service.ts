@@ -6,12 +6,8 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
-import * as crypto from 'crypto';
-import PDFDocument from 'pdfkit';
-import 'pdfkit/standard-fonts/Helvetica';
-import 'pdfkit/standard-fonts/HelveticaBold';
-import 'pdfkit/standard-fonts/HelveticaOblique';
-import 'pdfkit/standard-fonts/HelveticaBoldOblique';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const PDFDocument = require('pdfkit');
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -166,11 +162,18 @@ export class JadwalUjianService implements OnModuleInit {
         u."updatedAt",
         t.nama as tahun_ajaran_nama,
         t.semester as tahun_ajaran_semester,
-        COUNT(DISTINCT i.id)::int as total_items,
-        COUNT(DISTINCT i.kelas_id)::int as total_kelas
+        COALESCE(stat.total_items, 0)::int as total_items,
+        COALESCE(stat.total_kelas, 0)::int as total_kelas
       FROM "jadwal_ujian" u
       LEFT JOIN "tahun_ajaran" t ON u.tahun_ajaran_id = t.id
-      LEFT JOIN "jadwal_ujian_item" i ON u.id = i.jadwal_ujian_id
+      LEFT JOIN (
+        SELECT 
+          jadwal_ujian_id, 
+          COUNT(id) as total_items, 
+          COUNT(DISTINCT kelas_id) as total_kelas 
+        FROM "jadwal_ujian_item" 
+        GROUP BY jadwal_ujian_id
+      ) stat ON u.id = stat.jadwal_ujian_id
       WHERE u.sekolah_id = $1
     `;
 
@@ -181,7 +184,8 @@ export class JadwalUjianService implements OnModuleInit {
       params.push(tahunAjaranId);
     }
 
-    query += ` GROUP BY u.id, t.nama, t.semester ORDER BY u."createdAt" DESC`;
+    query += ` ORDER BY u."createdAt" DESC`;
+
 
     const rows = await this.prisma.$queryRawUnsafe<any[]>(query, ...params);
 
@@ -1367,8 +1371,8 @@ export class JadwalUjianService implements OnModuleInit {
       const fotoBoxY = midY + 80;
       doc.roundedRect(rightX, fotoBoxY, rightW, 58, 6).fillColor('#FAFAFA').lineWidth(0.8).strokeColor('#E2E8F0').fillAndStroke();
 
-      // Placeholder Pas Foto 2x3 / 3x4
-      doc.rect(rightX + 10, fotoBoxY + 5, 38, 48).lineWidth(0.6).strokeColor('#94A3B8').dash(3, { space: 2 }).stroke();
+      // Placeholder Pas Foto 2x3 / 3x4 (Rounded)
+      doc.roundedRect(rightX + 10, fotoBoxY + 5, 38, 48, 4).lineWidth(0.6).strokeColor('#94A3B8').dash(3, { space: 2 }).stroke();
       doc.undash();
       doc.font('Helvetica').fontSize(6).fillColor('#94A3B8').text('PAS FOTO\n2 x 3 / 3 x 4', rightX + 10, fotoBoxY + 19, { width: 38, align: 'center' });
 
@@ -1523,8 +1527,8 @@ export class JadwalUjianService implements OnModuleInit {
 
       const card = cards[i];
 
-      // 1. Garis Potong Putus-Putus (Dashed Cut Border)
-      doc.rect(cardX, cardY, cardWidth, cardHeight)
+      // 1. Garis Potong Putus-Putus (Dashed Cut Border dengan sudut bulat)
+      doc.roundedRect(cardX, cardY, cardWidth, cardHeight, 6)
         .lineWidth(1)
         .dash(4, { space: 3 })
         .strokeColor('#94A3B8')
@@ -1532,7 +1536,7 @@ export class JadwalUjianService implements OnModuleInit {
       doc.undash();
 
       // 2. Header Label (Nama Sekolah & Nama Ujian)
-      doc.rect(cardX + 1, cardY + 1, cardWidth - 2, 28)
+      doc.roundedRect(cardX + 1, cardY + 1, cardWidth - 2, 28, 5)
         .fillColor('#F1F5F9')
         .fill();
 

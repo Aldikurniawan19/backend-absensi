@@ -117,11 +117,50 @@ export class JadwalService {
       }
     }
 
-    // 2. Cek setiap item ke database
+    // 2. Ambil seluruh jadwal yang sudah ada di database untuk tahun ajaran ini dalam 1 query batch
+    const existingSchedules = await this.prisma.jadwalPelajaran.findMany({
+      where: {
+        tahun_ajaran_id: dto.tahun_ajaran_id,
+      },
+      include: {
+        guru: { select: { nama: true } },
+        kelas: {
+          select: {
+            tingkat: true,
+            nama_rombel: true,
+            jurusan: { select: { kode: true } },
+          },
+        },
+        mapel: { select: { nama: true } },
+      },
+    });
+
+    // 3. Cek setiap item terhadap existingSchedules di memori (O(N) super cepat tanpa I/O database berulang)
     for (const item of dto.items) {
-      const clash = await this.checkClash(item, dto.tahun_ajaran_id);
-      if (!clash.valid) {
-        allErrors.push(...clash.errors);
+      for (const ex of existingSchedules) {
+        if (ex.hari === item.hari) {
+          const overlap = isTimeOverlapping(
+            item.jam_mulai,
+            item.jam_selesai,
+            ex.jam_mulai,
+            ex.jam_selesai,
+          );
+
+          if (overlap) {
+            if (ex.guru_id === item.guru_id) {
+              const kelasName = `${ex.kelas.tingkat} ${ex.kelas.jurusan.kode} ${ex.kelas.nama_rombel}`;
+              allErrors.push(
+                `Bentrok Guru: ${ex.guru.nama} sudah memiliki jadwal mengajar ${ex.mapel.nama} di kelas ${kelasName} pada hari ${ex.hari} jam ${ex.jam_mulai} - ${ex.jam_selesai}`,
+              );
+            }
+            if (ex.kelas_id === item.kelas_id) {
+              const kelasName = `${ex.kelas.tingkat} ${ex.kelas.jurusan.kode} ${ex.kelas.nama_rombel}`;
+              allErrors.push(
+                `Bentrok Kelas: Kelas ${kelasName} sudah memiliki jadwal ${ex.mapel.nama} bersama ${ex.guru.nama} pada hari ${ex.hari} jam ${ex.jam_mulai} - ${ex.jam_selesai}`,
+              );
+            }
+          }
+        }
       }
     }
 
@@ -130,6 +169,7 @@ export class JadwalService {
       errors: Array.from(new Set(allErrors)),
     };
   }
+
 
   async createJadwal(dto: CreateJadwalDto, actorId: string) {
     // Validasi bentrok sebelum membuat

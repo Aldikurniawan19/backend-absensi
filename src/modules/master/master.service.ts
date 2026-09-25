@@ -18,19 +18,28 @@ import {
   UpdateTahunAjaranDto,
 } from './dto/master.dto';
 
+import { MasterCacheService } from './master-cache.service';
+
 @Injectable()
 export class MasterService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly masterCache: MasterCacheService,
   ) {}
 
   // ==================== SEKOLAH ====================
   async getSekolah(sekolahId: string) {
+    const cacheKey = `sekolah:${sekolahId}`;
+    const cached = this.masterCache.get<any>(cacheKey);
+    if (cached) return cached;
+
     const sekolah = await this.prisma.sekolah.findUnique({
       where: { id: sekolahId },
     });
     if (!sekolah) throw new NotFoundException('Data sekolah tidak ditemukan');
+
+    this.masterCache.set(cacheKey, sekolah, 10 * 60 * 1000); // 10 menit
     return sekolah;
   }
 
@@ -39,6 +48,8 @@ export class MasterService {
       where: { id: sekolahId },
       data: dto,
     });
+
+    this.masterCache.invalidate(`sekolah:${sekolahId}`);
 
     await this.auditService.log({
       sekolah_id: sekolahId,
@@ -62,10 +73,20 @@ export class MasterService {
   }
 
   async getTahunAjaranAktif(sekolahId: string) {
-    return this.prisma.tahunAjaran.findFirst({
+    const cacheKey = `ta_aktif:${sekolahId}`;
+    const cached = this.masterCache.get<any>(cacheKey);
+    if (cached) return cached;
+
+    const activeTA = await this.prisma.tahunAjaran.findFirst({
       where: { sekolah_id: sekolahId, status: TahunAjaranStatus.AKTIF },
     });
+
+    if (activeTA) {
+      this.masterCache.set(cacheKey, activeTA, 5 * 60 * 1000); // 5 menit
+    }
+    return activeTA;
   }
+
 
   async createTahunAjaran(sekolahId: string, dto: CreateTahunAjaranDto, actorId: string) {
     const created = await this.prisma.tahunAjaran.create({
@@ -78,6 +99,8 @@ export class MasterService {
         status: dto.status || TahunAjaranStatus.DRAFT,
       },
     });
+
+    this.masterCache.invalidate(`ta_aktif:${sekolahId}`);
 
     await this.auditService.log({
       sekolah_id: sekolahId,
@@ -101,6 +124,8 @@ export class MasterService {
       where: { id },
       data,
     });
+
+    this.masterCache.invalidate(`ta_aktif:${updated.sekolah_id}`);
 
     await this.auditService.log({
       sekolah_id: updated.sekolah_id,
@@ -132,6 +157,8 @@ export class MasterService {
         data: { status: TahunAjaranStatus.AKTIF },
       });
 
+      this.masterCache.invalidate(`ta_aktif:${sekolahId}`);
+
       await this.auditService.log({
         sekolah_id: sekolahId,
         actor_id: actorId,
@@ -147,8 +174,11 @@ export class MasterService {
   }
 
   async deleteTahunAjaran(id: string) {
-    return this.prisma.tahunAjaran.delete({ where: { id } });
+    const deleted = await this.prisma.tahunAjaran.delete({ where: { id } });
+    this.masterCache.invalidate(`ta_aktif:${deleted.sekolah_id}`);
+    return deleted;
   }
+
 
   // ==================== JURUSAN ====================
   async getJurusanList(sekolahId: string) {

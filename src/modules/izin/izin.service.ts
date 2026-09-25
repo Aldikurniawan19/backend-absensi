@@ -185,9 +185,9 @@ export class IzinService {
           },
         });
 
-        for (const abs of relatedAbsensi) {
-          await tx.absensi.update({
-            where: { id: abs.id },
+        if (relatedAbsensi.length > 0) {
+          await tx.absensi.updateMany({
+            where: { id: { in: relatedAbsensi.map((a) => a.id) } },
             data: {
               status: targetStatus,
               keterangan: `Disinkronkan dari permohonan ${pengajuan.jenis} yang disetujui`,
@@ -195,6 +195,7 @@ export class IzinService {
           });
         }
       }
+
 
       await this.auditService.log({
         sekolah_id: currentUser.sekolah_id,

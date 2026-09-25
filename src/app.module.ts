@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -9,14 +9,18 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TransformResponseInterceptor } from './common/interceptors/transform-response.interceptor';
+import { CompressionMiddleware } from './common/middleware/compression.middleware';
 import { PrismaModule } from './database/prisma.module';
 import { AbsensiModule } from './modules/absensi/absensi.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { EkstrakurikulerModule } from './modules/ekstrakurikuler/ekstrakurikuler.module';
 import { IzinModule } from './modules/izin/izin.module';
 import { JadwalModule } from './modules/jadwal/jadwal.module';
 import { LaporanModule } from './modules/laporan/laporan.module';
 import { MasterModule } from './modules/master/master.module';
+import { NilaiModule } from './modules/nilai/nilai.module';
+import { RaportModule } from './modules/raport/raport.module';
 import { SesiModule } from './modules/sesi/sesi.module';
 import { UsersModule } from './modules/users/users.module';
 import { AppController } from './app.controller';
@@ -41,6 +45,9 @@ import { AppController } from './app.controller';
     AbsensiModule,
     IzinModule,
     LaporanModule,
+    NilaiModule,
+    EkstrakurikulerModule,
+    RaportModule,
   ],
   controllers: [AppController],
   providers: [
@@ -74,4 +81,11 @@ import { AppController } from './app.controller';
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(CompressionMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}
+

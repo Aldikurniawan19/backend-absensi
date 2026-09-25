@@ -70,11 +70,13 @@ export class UsersService {
           no_hp_ortu: true,
           createdAt: true,
           riwayat_kelas: {
+            take: 1,
             include: {
               kelas: {
                 include: {
                   jurusan: true,
                   penugasan_wali_kelas: {
+                    take: 1,
                     include: {
                       guru: {
                         select: {
@@ -97,6 +99,7 @@ export class UsersService {
         orderBy: { nama: 'asc' },
       }),
     ]);
+
 
     return {
       data,
